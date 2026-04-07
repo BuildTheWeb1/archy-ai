@@ -57,17 +57,13 @@ async def upload_drawing(
 
 
 def _process_drawing(drawing_id: str) -> None:
-    """Background task: convert DWG → PDF → split into per-layout PDFs."""
+    """Background task: convert DWG → per-layout PDFs via CloudConvert."""
     try:
         dwg_path = storage.original_dwg_path(drawing_id)
-        pdf_path = storage.converted_pdf_path(drawing_id)
         layouts_path = storage.layouts_dir(drawing_id)
 
         logger.info("Converting %s via CloudConvert…", drawing_id)
-        converter.convert_dwg_to_pdf(str(dwg_path), str(pdf_path))
-
-        logger.info("Splitting PDF for %s…", drawing_id)
-        layouts = splitter.split_pdf(str(pdf_path), str(layouts_path))
+        layouts = converter.convert_dwg_to_pdfs(str(dwg_path), str(layouts_path))
 
         storage.update_layouts(drawing_id, layouts)
         storage.update_status(drawing_id, DrawingStatus.ready)

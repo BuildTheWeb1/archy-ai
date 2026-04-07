@@ -20,6 +20,78 @@ This plan is rewritten after analyzing your actual `newmoda.dwg` source file and
 
 This makes the product **simpler, faster, cheaper, and more reliable** than v2 suggested.
 
+## What Changed in v3.1 — CloudConvert Cannot Split Layouts (April 7, 2026)
+
+After building and testing the Feature 1 (Layout Splitter) MVP using CloudConvert, **critical findings** require a change in the conversion pipeline:
+
+### Problem: CloudConvert Loses Paper Space Layouts
+
+CloudConvert's `cadconverter` engine (v8.10, the only available engine for DWG→PDF) **does not properly extract Paper Space layout tabs** from DWG files. Testing with `newmoda.dwg` revealed:
+
+| What we expected | What CloudConvert produced |
+|---|---|
+| 17 separate A3 PDFs (842×1191 pts each) | 1 PDF with 2 pages at 800×600 pts |
+| Each Paper Space layout rendered full-size | Model Space (all layouts as tiny thumbnails) + 1 near-empty page |
+| Proper A3 page dimensions | Generic 800×600 pixel-like dimensions |
+| Bookmarks with layout names | No bookmarks |
+
+**Both DWG→PDF and DWG→DXF conversions via CloudConvert lose layouts.** The DXF output also contained only 2 layouts (Model + 1 "A3 Landscape") instead of 17 Paper Space tabs. The cadconverter engine has only 4 parameters (`all_layouts`, `width`, `height`, `auto_zoom`) — none allow selecting or excluding specific layouts.
+
+Additionally, the converter code was only downloading `files[0]` from CloudConvert's export, but testing confirmed CloudConvert returns only 1 output file regardless (not 17 separate files).
+
+### Root Cause
+
+CloudConvert's CAD engine cannot enumerate and render individual AutoCAD Paper Space layout tabs. It renders Model Space as the primary output. This is a fundamental engine limitation, not a parameter configuration issue.
+
+### Impact on Architecture
+
+The Layout Splitter pipeline **must change** from:
+
+```
+DWG → CloudConvert → multi-page PDF → pypdf split → per-layout PDFs
+```
+
+To:
+
+```
+DWG → ODA File Converter → DXF (all 17 layouts preserved)
+    → ezdxf reads DXF → enumerates Paper Space layouts
+    → ezdxf.addons.drawing + matplotlib → render each layout to A3 PDF
+```
+
+### Validated Components
+
+| Component | Status | Notes |
+|---|---|---|
+| ezdxf 1.4.3 DXF reading | Working | Correctly enumerates layouts, entities, blocks from DXF |
+| ezdxf matplotlib rendering | Working | Successfully renders Model Space to PDF (25MB test output) |
+| ezdxf pymupdf backend | Available | PyMuPDF (AGPL) installed, untested |
+| ODA File Converter | **Not installed** | Required — preserves all layouts during DWG→DXF conversion |
+| CloudConvert DWG→PDF | **Broken** | Cannot extract Paper Space layouts |
+| CloudConvert DWG→DXF | **Broken** | Same issue — only 2 of 17 layouts preserved |
+
+### Required Action
+
+1. **Install ODA File Converter** (free download from opendesignalliance.com, macOS version)
+2. **Rewrite `converter.py`** to use ODA via `ezdxf.addons.odafc` for DWG→DXF
+3. **Add layout rendering** using ezdxf's drawing add-on + matplotlib for DXF→A3 PDF
+4. **Remove CloudConvert dependency** from the conversion pipeline (may keep for future fallback)
+5. **Budget for ODA commercial license** (~$200/year) for production SaaS deployment
+
+### Open Risk: Rendering Quality
+
+The example PDFs were produced by "Microsoft: Print To PDF" from within AutoCAD — native rendering quality. The ezdxf + matplotlib rendering approach will produce acceptable but potentially lower-fidelity output (different text rendering, simplified hatches, etc.). This needs Phase 0 visual comparison testing.
+
+### Updated Cost Impact
+
+| Component | Before (CloudConvert) | After (ODA + ezdxf) |
+|---|---|---|
+| Per-drawing API cost | ~$0.01 (CloudConvert credit) | $0 (local processing) |
+| Infrastructure | CloudConvert API key | ODA File Converter binary |
+| Licensing | CloudConvert subscription | ODA license ~$200/year |
+| Processing time | ~30-60s (network round-trip) | ~5-15s (local, CPU-bound) |
+| Quality control | Depends on CloudConvert engine | Full control via ezdxf |
+
 ---
 
 ## Table of Contents
@@ -76,7 +148,7 @@ ArchyAI scans all rebar annotations across the project's layouts, parses them in
 
 The uploaded file is a complete structural project for a P+1E house (ground floor + 1 upper floor) by ArchiBau Studio in Giroc, Romania. File format: DWG AC1032 (AutoCAD 2018/2019/2020), 4.4 MB.
 
-### The 12 Layouts
+### The Layouts (17 expected from example-docs)
 
 | # | Sheet | Title | Has Schedule | Source Layouts for Schedule |
 |---|-------|-------|--------------|------------------------------|
@@ -201,23 +273,28 @@ I cannot inspect the DWG internals without ezdxf, but based on the visual output
 
 ### Pipeline
 
+> **Note (v3.1):** The original plan called for CloudConvert as the DWG→PDF engine. Testing proved CloudConvert's `cadconverter` engine cannot extract Paper Space layouts (produces 2 pages instead of 17). The pipeline below uses ODA File Converter + ezdxf instead.
+
 ```
 DWG file uploaded
       ↓
-ODA File Converter → DXF (or libredwg as fallback)
+POST /api/drawings/upload
+  → saves to uploads/{id}/original.dwg
+  → sets status = "processing"
+  → returns {id, status} immediately
       ↓
-ezdxf reads DXF
+Background task:
+  1. ODA File Converter: original.dwg → converted.dxf (all layouts preserved)
+  2. ezdxf reads DXF, enumerates Paper Space layouts (skipping Model Space)
+  3. For each layout:
+     ├─ Get layout name from DXF (e.g., "R01", "R02", ..., "R12")
+     ├─ Render via ezdxf.addons.drawing + matplotlib backend
+     ├─ Output: PDF fitted to A3 (297×420mm, 842×1191 pts)
+     └─ Save as layouts/{index}.pdf
+  4. Update metadata.json: status = "ready", layouts = [{index, name}]
       ↓
-For each layout in doc.layouts (skipping Model space):
-  ├─ Get layout name (R01, R02, ..., R12)
-  ├─ Render layout via ezdxf.addons.drawing → matplotlib backend
-  ├─ Output: PNG at 300 DPI matching original page size
-  ├─ Convert PNG → PDF, fitted to A3 (297×420mm)
-  └─ Save as ordered file
-      ↓
-Bundle all PDFs into ZIP with manifest.json
-      ↓
-User downloads
+Frontend polls GET /api/drawings/{id} every 2s
+  → When status = "ready": shows layout list with download buttons
 ```
 
 ### A3 Normalization
@@ -670,11 +747,17 @@ When AI is used, **Claude Haiku 4.5** is the right pick:
 
 **Critical: Don't build the SaaS yet. Prove the core works with real files.**
 
-- [ ] Set up Python environment (Windows/Mac, your machine)
-- [ ] Install ezdxf, openpyxl, matplotlib, ODA File Converter
-- [ ] Convert `newmoda.dwg` → `newmoda.dxf` using ODA
-- [ ] Inspect DXF: list layouts, count entities, examine layer names
-- [ ] Render each layout to PNG/PDF, compare visually to your provided PDFs
+> **Status update (April 7, 2026):** Phase 0 is partially complete. CloudConvert was tested and failed. The ezdxf + matplotlib rendering works but needs ODA for proper DWG→DXF conversion. See "What Changed in v3.1" above.
+
+- [x] Set up Python environment (Mac) — venv with ezdxf 1.4.3, pypdf, matplotlib, requests
+- [x] Test CloudConvert DWG→PDF pipeline — **FAILED**: only 2 pages instead of 17
+- [x] Test CloudConvert DWG→DXF pipeline — **FAILED**: only 2 layouts instead of 17
+- [x] Verify ezdxf can read DXF and enumerate layouts — **WORKS** (but needs proper DXF)
+- [x] Verify ezdxf matplotlib PDF rendering — **WORKS** (rendered Model Space to 25MB PDF)
+- [x] Build and test Feature 1 MVP (upload → split → download) — **Pipeline works, conversion doesn't**
+- [ ] **BLOCKED: Install ODA File Converter** (download from opendesignalliance.com)
+- [ ] Convert `newmoda.dwg` → `newmoda.dxf` using ODA — verify all 17 layouts present
+- [ ] Render each layout to A3 PDF via ezdxf, compare visually to example-docs/*.pdf
 - [ ] Extract all TEXT/MTEXT entities, dump to JSON
 - [ ] Write the parser v0.1 with the patterns identified in this plan
 - [ ] Run parser against extracted text from R02, R09 (the layouts with most rebar data)
@@ -682,12 +765,14 @@ When AI is used, **Claude Haiku 4.5** is the right pick:
 - [ ] Measure: what percentage of marks does the parser correctly identify?
 
 **Success criteria:**
+- ODA produces DXF with all 17 Paper Space layouts from newmoda.dwg
 - Layout rendering quality is acceptable (text readable, geometry visible)
 - Parser identifies >85% of rebar marks correctly
 - Calculated totals match the actual schedules within 5%
 
 **If success:** Proceed to Phase 1.
-**If failure:** Investigate alternatives (different rendering library, additional patterns, possibly AI-assisted parsing earlier than planned).
+**If failure on rendering quality:** Investigate PyMuPDF backend, Autodesk APS, or hybrid approaches.
+**If failure on layout extraction:** Investigate libredwg, FreeCAD, or Autodesk APS as alternative DWG readers.
 
 ### Phase 1 — Feature 1 MVP (Weeks 2–4)
 
@@ -804,6 +889,7 @@ The Free tier is generous enough for engineers to evaluate on a real project. So
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
+| **CloudConvert cannot extract Paper Space layouts** | **Confirmed** | **Critical** | **Pivot to ODA File Converter + ezdxf rendering. CloudConvert removed from conversion pipeline.** |
 | Layout rendering misses elements (hatches, custom fonts) | Medium | High | Phase 0 validation. ODA-direct rendering as fallback. |
 | Parser misses non-standard notation from a new firm | High | Medium | Each new pattern becomes a regex addition. AI fallback for unknowns in Phase 2. |
 | Romanian characters render wrong | Low | Medium | Bundle DejaVu Sans + Noto Sans. Test with actual project. |
