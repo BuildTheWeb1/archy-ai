@@ -1,1 +1,60 @@
-example-docs
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Editor ────────────────────────────────────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.sw?
+
+# ── Backend ───────────────────────────────────────────────────────────────────
+backend/venv/
+backend/uploads/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.pyc
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.env
+.env.*
+!.env.example
+
+# ── Frontend ──────────────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.local
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# ── TanStack Router (auto-generated) ─────────────────────────────────────────
+frontend/src/routeTree.gen.ts
+
+# ── Private / sensitive ───────────────────────────────────────────────────────
+example-docs/
+*.dwg
+*.dxf
+!sample-files/*.dxf
+!sample-files/*.dwg
+
+# ── Exports ───────────────────────────────────────────────────────────────────
+*.xlsx
+*.csv
+
+# ── Logs (keep the folder, ignore content except implementation log) ──────────
+logs/*.log
+logs/server-*.md
+
+# ── Claude ────────────────────────────────────────────────────────────────────
+.claude
+.firecrawl
+sample-files
