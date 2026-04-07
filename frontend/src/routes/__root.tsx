@@ -15,7 +15,7 @@ function RootLayout() {
           </svg>
           <span className="font-bold text-slate-900">Archy AI</span>
         </Link>
-        <span className="text-slate-300 text-xs">CAD Extract — localhost demo</span>
+        <span className="text-slate-300 text-xs">Layout Splitter</span>
       </nav>
 
       <main className="flex-1 flex flex-col">

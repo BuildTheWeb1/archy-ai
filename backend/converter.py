@@ -1,0 +1,101 @@
+"""
+DWG → multi-page PDF via CloudConvert.
+
+CloudConvert uses a native CAD engine to render the DWG, producing one PDF
+page per AutoCAD layout — matching AutoCAD's own output quality.
+
+Requires CLOUDCONVERT_API_KEY in the environment.
+"""
+
+import os
+import time
+from pathlib import Path
+
+import requests
+
+_CC_BASE = "https://api.cloudconvert.com/v2"
+_TIMEOUT_SECONDS = 300  # 5 minutes
+
+
+def convert_dwg_to_pdf(dwg_path: str, out_pdf_path: str) -> None:
+    """
+    Convert a DWG file to a multi-page PDF (one page per layout).
+    Blocks until conversion is complete. Raises RuntimeError on failure.
+    """
+    api_key = os.environ.get("CLOUDCONVERT_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "CLOUDCONVERT_API_KEY is not set. "
+            "Add it to your .env file to enable DWG conversion."
+        )
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    dwg = Path(dwg_path)
+
+    # 1. Create job: upload → convert → export
+    job_resp = requests.post(
+        f"{_CC_BASE}/jobs",
+        headers=headers,
+        json={
+            "tasks": {
+                "upload-dwg": {"operation": "import/upload"},
+                "convert-to-pdf": {
+                    "operation": "convert",
+                    "input": "upload-dwg",
+                    "input_format": "dwg",
+                    "output_format": "pdf",
+                    "engine": "cadconverter",
+                    "all_layouts": True,
+                },
+                "export-pdf": {
+                    "operation": "export/url",
+                    "input": "convert-to-pdf",
+                },
+            }
+        },
+        timeout=30,
+    )
+    job_resp.raise_for_status()
+    job = job_resp.json()["data"]
+
+    # 2. Upload the DWG
+    upload_task = next(t for t in job["tasks"] if t["name"] == "upload-dwg")
+    form = upload_task["result"]["form"]
+    with open(dwg_path, "rb") as f:
+        upload_resp = requests.post(
+            form["url"],
+            data=form["parameters"],
+            files={"file": (dwg.name, f)},
+            timeout=120,
+        )
+    upload_resp.raise_for_status()
+
+    # 3. Poll until finished
+    job_id = job["id"]
+    deadline = time.time() + _TIMEOUT_SECONDS
+    while time.time() < deadline:
+        time.sleep(4)
+        status_resp = requests.get(
+            f"{_CC_BASE}/jobs/{job_id}", headers=headers, timeout=30
+        )
+        status_resp.raise_for_status()
+        data = status_resp.json()["data"]
+
+        if data["status"] == "finished":
+            break
+        if data["status"] == "error":
+            tasks = data.get("tasks", [])
+            failed = next((t for t in tasks if t["status"] == "error"), None)
+            msg = failed.get("message", "Unknown error") if failed else "Conversion failed"
+            raise RuntimeError(f"CloudConvert error: {msg}")
+    else:
+        raise RuntimeError("CloudConvert timed out after 5 minutes.")
+
+    # 4. Download the PDF
+    tasks = status_resp.json()["data"]["tasks"]
+    export_task = next(t for t in tasks if t["name"] == "export-pdf")
+    download_url = export_task["result"]["files"][0]["url"]
+
+    pdf_resp = requests.get(download_url, timeout=120)
+    pdf_resp.raise_for_status()
+    Path(out_pdf_path).write_bytes(pdf_resp.content)
