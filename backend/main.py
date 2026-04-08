@@ -34,11 +34,12 @@ async def upload_drawing(
     file: UploadFile = File(...),
 ):
     filename = file.filename or ""
-    if Path(filename).suffix.lower() != ".dwg":
-        raise HTTPException(400, "Only .dwg files are supported.")
+    ext = Path(filename).suffix.lower()
+    if ext not in (".dwg", ".dxf"):
+        raise HTTPException(400, "Only .dwg and .dxf files are supported.")
 
     drawing_id = storage.new_drawing_id()
-    dwg_path = storage.original_dwg_path(drawing_id)
+    dwg_path = storage.original_path(drawing_id, ext)
 
     with open(dwg_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
@@ -57,12 +58,14 @@ async def upload_drawing(
 
 
 def _process_drawing(drawing_id: str) -> None:
-    """Background task: convert DWG → per-layout PDFs via CloudConvert."""
+    """Background task: convert DWG/DXF → per-layout PDFs via ezdxf."""
     try:
-        dwg_path = storage.original_dwg_path(drawing_id)
+        record = storage.load_metadata(drawing_id)
+        ext = Path(record["filename"]).suffix.lower()
+        dwg_path = storage.original_path(drawing_id, ext)
         layouts_path = storage.layouts_dir(drawing_id)
 
-        logger.info("Converting %s via CloudConvert…", drawing_id)
+        logger.info("Rendering layouts for %s…", drawing_id)
         layouts = converter.convert_dwg_to_pdfs(str(dwg_path), str(layouts_path))
 
         storage.update_layouts(drawing_id, layouts)

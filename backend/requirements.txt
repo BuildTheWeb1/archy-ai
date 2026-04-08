@@ -1,8 +1,7 @@
 fastapi==0.115.*
 uvicorn==0.34.*
 python-multipart==0.0.*
-requests>=2.32.*
-pypdf>=4.0.*
-# Phase 2 — rebar schedule (DXF parsing + Excel export)
 ezdxf==1.4.*
+matplotlib>=3.9.*
+# Phase 2 — rebar schedule (Excel export)
 openpyxl==3.1.*

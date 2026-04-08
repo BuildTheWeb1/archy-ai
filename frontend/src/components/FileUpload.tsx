@@ -16,7 +16,8 @@ export function FileUpload() {
   });
 
   const handleFile = (file: File) => {
-    if (!file.name.toLowerCase().endsWith(".dwg")) {
+    const ext = file.name.toLowerCase();
+    if (!ext.endsWith(".dwg") && !ext.endsWith(".dxf")) {
       return;
     }
     upload.mutate(file);
@@ -60,7 +61,7 @@ export function FileUpload() {
           <input
             ref={inputRef}
             type="file"
-            accept=".dwg"
+            accept=".dwg,.dxf"
             className="hidden"
             onChange={onInputChange}
           />
@@ -81,7 +82,7 @@ export function FileUpload() {
               <p className="text-slate-700 font-semibold mb-1">
                 Trage fișierul aici sau <span className="text-blue-600">alege din calculator</span>
               </p>
-              <p className="text-slate-400 text-sm">Doar fișiere .dwg</p>
+              <p className="text-slate-400 text-sm">Fișiere .dwg sau .dxf</p>
             </>
           )}
         </div>

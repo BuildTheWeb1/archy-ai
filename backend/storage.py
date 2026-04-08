@@ -4,13 +4,10 @@ Local file-based storage with JSON metadata.
 Structure:
   uploads/
     {drawing_id}/
-      metadata.json   — DrawingRecord dict
-      original.dwg    — uploaded file
-      converted.pdf   — multi-page PDF from CloudConvert
+      metadata.json        — DrawingRecord dict
+      original.dwg/.dxf    — uploaded file
       layouts/
-        0.pdf
-        1.pdf
-        ...
+        0.pdf, 1.pdf, …   — per-layout PDFs rendered by ezdxf
 """
 
 import json
@@ -76,12 +73,9 @@ def update_layouts(drawing_id: str, layouts: list[dict]) -> None:
 # File paths
 # ---------------------------------------------------------------------------
 
-def original_dwg_path(drawing_id: str) -> Path:
-    return drawing_dir(drawing_id) / "original.dwg"
-
-
-def converted_pdf_path(drawing_id: str) -> Path:
-    return drawing_dir(drawing_id) / "converted.pdf"
+def original_path(drawing_id: str, ext: str = ".dwg") -> Path:
+    """Return the path for the uploaded original file (.dwg or .dxf)."""
+    return drawing_dir(drawing_id) / f"original{ext}"
 
 
 def layout_pdf_path(drawing_id: str, index: int) -> Path:

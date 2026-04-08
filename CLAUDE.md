@@ -23,10 +23,10 @@ Target users: Romanian structural engineering firms (1–20 people). They curren
 ### Backend
 
 - **API framework**: Python 3.12 + FastAPI
-- **DWG → PDF conversion**: CloudConvert API (native CAD rendering, one page per layout)
-- **PDF splitting**: pypdf (splits multi-page PDF into per-layout PDFs)
+- **DWG reading**: ODA File Converter (via `ezdxf.addons.odafc`)
+- **DXF parsing + rendering**: ezdxf 1.4+ (enumerates Paper Space layouts, renders to PDF)
+- **PDF rendering**: matplotlib (ezdxf drawing addon backend, black-on-white A3 output)
 - **Rebar parser**: Custom Python module — Phase 2 (stub exists in `parser.py`)
-- **DXF parsing**: ezdxf 1.4+ — Phase 2 only (rebar text extraction)
 - **Excel export**: openpyxl — Phase 2 only
 - **Task queue**: None — FastAPI BackgroundTasks for async processing
 - **Database**: None — local JSON metadata files
@@ -45,8 +45,8 @@ Target users: Romanian structural engineering firms (1–20 people). They curren
 archyai/
 ├── backend/
 │   ├── main.py              # FastAPI app — routes only, thin handlers
-│   ├── converter.py         # CloudConvert DWG → multi-page PDF
-│   ├── splitter.py          # Split multi-page PDF into per-layout PDFs
+│   ├── converter.py         # ODA + ezdxf: DWG/DXF → per-layout A3 PDFs
+│   ├── splitter.py          # Bundle layout PDFs into ZIP
 │   ├── storage.py           # Local JSON metadata + file path helpers
 │   ├── schemas.py           # Pydantic request/response models
 │   │
@@ -56,8 +56,7 @@ archyai/
 │   ├── uploads/             # Runtime storage — gitignored
 │   │   └── {drawing_id}/
 │   │       ├── metadata.json
-│   │       ├── original.dwg
-│   │       ├── converted.pdf
+│   │       ├── original.dwg/.dxf
 │   │       └── layouts/0.pdf, 1.pdf, …
 │   └── requirements.txt
 │
@@ -79,9 +78,10 @@ archyai/
 │   └── package.json
 │
 ├── sample-files/
-│   └── newmoda.dwg                     # Real test drawing
+│   ├── sample.dxf                      # Simple test drawing (1 layout)
+│   └── sample_multi.dxf                # Multi-layout test drawing (5 sheets)
 ├── example-docs/                       # Expected output PDFs (1.pdf–17.pdf)
-├── .env                                # CLOUDCONVERT_API_KEY (gitignored)
+├── .env                                # ODA_FILE_CONVERTER path (gitignored)
 └── start-dev.sh                        # Starts backend + frontend
 ```
 
@@ -98,12 +98,12 @@ cd backend && source venv/bin/activate && uvicorn main:app --reload --port 8000
 cd frontend && pnpm dev
 ```
 
-The `.env` file at the repo root is loaded by `start-dev.sh`. It must contain `CLOUDCONVERT_API_KEY`.
+The `.env` file at the repo root is loaded by `start-dev.sh`. For DWG support, set `ODA_FILE_CONVERTER` to the ODA binary path (auto-detected on macOS). DXF files work without ODA.
 
 ## API Endpoints
 
 ```
-POST  /api/drawings/upload              Upload DWG → triggers background conversion
+POST  /api/drawings/upload              Upload DWG/DXF → triggers background rendering
 GET   /api/drawings/{id}                Poll status: processing | ready | error
 GET   /api/drawings/{id}/layouts/{n}/pdf  Download single layout PDF
 GET   /api/drawings/{id}/download       Download ZIP of all layouts
@@ -113,17 +113,17 @@ GET   /health
 ## Processing Pipeline
 
 ```
-User uploads .dwg
+User uploads .dwg or .dxf
       ↓
 POST /api/drawings/upload
-  → saves file to uploads/{id}/original.dwg
+  → saves file to uploads/{id}/original.dwg (or .dxf)
   → sets status = "processing"
   → returns {id, status: "processing"} immediately
       ↓
 Background task (_process_drawing):
-  1. CloudConvert: original.dwg → converted.pdf  (1 page per AutoCAD layout)
-  2. pypdf split:  converted.pdf → layouts/0.pdf, layouts/1.pdf, …
-  3. Extract layout names from PDF bookmarks (or fallback: "Layout_N")
+  1. Read DWG via ODA File Converter (or DXF directly via ezdxf)
+  2. Enumerate Paper Space layouts, skip Model Space + empty layouts
+  3. Render each layout → A3 PDF (black lines on white, print-ready)
   4. Update metadata.json: status = "ready", layouts = [{index, name}]
       ↓
 Frontend polls GET /api/drawings/{id} every 2s
@@ -137,8 +137,8 @@ Frontend polls GET /api/drawings/{id} every 2s
 - **Keep route handlers thin** — delegate all logic to `converter.py`, `splitter.py`, etc.
 - **Use Pydantic schemas** for all FastAPI request/response bodies.
 - **Use TypeScript strict mode** — no `any`.
-- **Always test with `newmoda.dwg`** after touching the converter or splitter.
-- **Fail loudly on missing API key** — never silently fall back to lower-quality rendering.
+- **Always test with `sample_multi.dxf`** after touching the converter or rendering.
+- **Fail loudly on missing ODA** — if a DWG is uploaded and ODA is not installed, raise a clear error.
 - **Trace every schedule value to its source** (Phase 2: layout name + text position).
 
 ### Don't
@@ -176,7 +176,7 @@ Marca | Ø [mm] | Oțel | Buc. | Lung. [m] | Lung./Ø [m] | Masa Ø/m [kg/m] | M
 
 ### A3 Output
 
-All layout PDFs come from CloudConvert, which preserves the AutoCAD paper space size. The result is native-quality PDF matching AutoCAD's own export.
+Each Paper Space layout is rendered to an A3 landscape PDF (420×297 mm) with black lines on white background (print-ready). Rendering uses ezdxf's drawing addon with a matplotlib backend.
 
 ## Implementation Phases
 
@@ -189,7 +189,7 @@ All layout PDFs come from CloudConvert, which preserves the AutoCAD paper space 
 
 ## Important
 
-- **Phase 0 validated**: the core DWG → PDF pipeline works via CloudConvert. The previous ezdxf+matplotlib rendering is gone.
-- **CloudConvert API key is required**. Without it the backend fails with a clear error. Key is in `.env`.
-- **Layout names**: extracted from PDF bookmarks when available (AutoCAD embeds them). Fallback: `Layout_N`.
+- **Rendering pipeline**: DWG → ODA File Converter → ezdxf → matplotlib → A3 PDF per layout. DXF files skip the ODA step.
+- **ODA File Converter is required for DWG files**. Install from opendesignalliance.com. On macOS it auto-detects at `/Applications/ODAFileConverter.app`. DXF files work without ODA.
+- **Layout names**: taken directly from the Paper Space layout tab names in the DWG/DXF. Empty layouts are skipped.
 - **Uploads are ephemeral** in local dev — restart clears in-memory state but files persist on disk under `backend/uploads/`.

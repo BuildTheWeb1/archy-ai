@@ -33,7 +33,7 @@ export function DrawingDetail({ drawingId }: Props) {
           <div className="w-12 h-12 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
           <p className="text-slate-700 font-semibold mb-1">Se procesează desenul…</p>
           <p className="text-slate-400 text-sm">
-            {data?.filename ?? "Se convertește via CloudConvert, poate dura ~30 secunde."}
+            {data?.filename ?? "Se extrag planșele, poate dura ~30 secunde."}
           </p>
         </div>
       </div>
