@@ -1,19 +1,13 @@
 export type DrawingStatus = "uploading" | "processing" | "ready" | "error";
 
-export interface Layout {
-  index: number;
-  name: string;
-}
-
 export interface Drawing {
-  id: string;
+  id:       string;
   filename: string;
-  status: DrawingStatus;
-  error: string | null;
-  layouts: Layout[];
+  status:   DrawingStatus;
+  error:    string | null;
 }
 
 export interface UploadResponse {
-  id: string;
+  id:     string;
   status: DrawingStatus;
 }

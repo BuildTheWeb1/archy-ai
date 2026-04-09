@@ -3,25 +3,19 @@ from pydantic import BaseModel
 
 
 class DrawingStatus(str, Enum):
-    uploading = "uploading"
-    processing = "processing"
-    ready = "ready"
-    error = "error"
-
-
-class LayoutSchema(BaseModel):
-    index: int
-    name: str
+    uploading   = "uploading"
+    processing  = "processing"
+    ready       = "ready"
+    error       = "error"
 
 
 class DrawingSchema(BaseModel):
-    id: str
+    id:       str
     filename: str
-    status: DrawingStatus
-    error: str | None = None
-    layouts: list[LayoutSchema] = []
+    status:   DrawingStatus
+    error:    str | None = None
 
 
 class UploadResponse(BaseModel):
-    id: str
+    id:     str
     status: DrawingStatus

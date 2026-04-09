@@ -2,14 +2,17 @@ import logging
 import shutil
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
 from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 import converter
-import splitter
 import storage
-from schemas import DrawingSchema, DrawingStatus, LayoutSchema, UploadResponse
+from schemas import DrawingSchema, DrawingStatus, UploadResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -35,42 +38,61 @@ async def upload_drawing(
 ):
     filename = file.filename or ""
     ext = Path(filename).suffix.lower()
-    if ext not in (".dwg", ".dxf"):
-        raise HTTPException(400, "Only .dwg and .dxf files are supported.")
+    if ext not in (".dwg", ".dxf", ".pdf"):
+        raise HTTPException(400, "Only .dwg, .dxf, and .pdf files are supported.")
 
     drawing_id = storage.new_drawing_id()
-    dwg_path = storage.original_path(drawing_id, ext)
+    file_path  = storage.original_path(drawing_id, ext)
 
-    with open(dwg_path, "wb") as f:
+    with open(file_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
     storage.save_metadata({
-        "id": drawing_id,
+        "id":       drawing_id,
         "filename": filename,
-        "status": DrawingStatus.processing,
-        "error": None,
-        "layouts": [],
+        "status":   DrawingStatus.processing,
+        "error":    None,
     })
 
-    background_tasks.add_task(_process_drawing, drawing_id)
+    if ext == ".pdf":
+        background_tasks.add_task(_process_pdf, drawing_id)
+    else:
+        background_tasks.add_task(_process_drawing, drawing_id)
 
     return UploadResponse(id=drawing_id, status=DrawingStatus.processing)
 
 
-def _process_drawing(drawing_id: str) -> None:
-    """Background task: convert DWG/DXF → per-layout PDFs via ezdxf."""
+def _process_pdf(drawing_id: str) -> None:
+    """Background task: use the uploaded PDF directly as output."""
     try:
-        record = storage.load_metadata(drawing_id)
-        ext = Path(record["filename"]).suffix.lower()
-        dwg_path = storage.original_path(drawing_id, ext)
-        layouts_path = storage.layouts_dir(drawing_id)
-
-        logger.info("Rendering layouts for %s…", drawing_id)
-        layouts = converter.convert_dwg_to_pdfs(str(dwg_path), str(layouts_path))
-
-        storage.update_layouts(drawing_id, layouts)
+        src = storage.original_path(drawing_id, ".pdf")
+        dst = storage.pdf_path(drawing_id)
+        shutil.copy2(src, dst)
         storage.update_status(drawing_id, DrawingStatus.ready)
-        logger.info("Drawing %s ready — %d layouts", drawing_id, len(layouts))
+        logger.info("Drawing %s ready (PDF passthrough)", drawing_id)
+    except Exception as exc:
+        logger.error("PDF passthrough failed for %s: %s", drawing_id, exc)
+        storage.update_status(drawing_id, DrawingStatus.error, str(exc))
+
+
+def _process_drawing(drawing_id: str) -> None:
+    """Background task: convert DWG/DXF → PDF via APS."""
+    try:
+        record  = storage.load_metadata(drawing_id)
+        ext     = Path(record["filename"]).suffix.lower()
+        dwg     = storage.original_path(drawing_id, ext)
+        out_dir = storage.drawing_dir(drawing_id)
+
+        logger.info("Converting %s…", record["filename"])
+        pdf = converter.convert_dwg_to_pdf(str(dwg), str(out_dir))
+
+        # Ensure the output lands at the canonical pdf_path location
+        canonical = storage.pdf_path(drawing_id)
+        if pdf != canonical:
+            shutil.move(str(pdf), str(canonical))
+
+        storage.update_status(drawing_id, DrawingStatus.ready)
+        logger.info("Drawing %s ready", drawing_id)
 
     except Exception as exc:
         logger.error("Processing failed for %s: %s", drawing_id, exc)
@@ -91,58 +113,32 @@ async def get_drawing(drawing_id: str):
         filename=record["filename"],
         status=record["status"],
         error=record.get("error"),
-        layouts=[LayoutSchema(**l) for l in record.get("layouts", [])],
     )
 
 
 # ---------------------------------------------------------------------------
-# Layout PDF downloads
+# PDF download
 # ---------------------------------------------------------------------------
 
-@app.get("/api/drawings/{drawing_id}/layouts/{index}/pdf")
-async def download_layout_pdf(drawing_id: str, index: int):
+@app.get("/api/drawings/{drawing_id}/pdf")
+async def get_drawing_pdf(drawing_id: str):
     record = storage.load_metadata(drawing_id)
     if record is None:
         raise HTTPException(404, "Drawing not found.")
     if record["status"] != DrawingStatus.ready:
         raise HTTPException(409, "Drawing is not ready yet.")
 
-    layouts = record.get("layouts", [])
-    layout = next((l for l in layouts if l["index"] == index), None)
-    if layout is None:
-        raise HTTPException(404, f"Layout {index} not found.")
+    path = storage.pdf_path(drawing_id)
+    if not path.exists():
+        raise HTTPException(500, "PDF missing on disk.")
 
-    pdf_path = storage.layout_pdf_path(drawing_id, index)
-    if not pdf_path.exists():
-        raise HTTPException(500, "Layout PDF missing on disk.")
-
-    safe_name = layout["name"].replace("/", "_").replace("\\", "_")
-    filename = f"{index + 1:02d}_{safe_name}.pdf"
+    stem     = Path(record["filename"]).stem
+    filename = f"{stem}.pdf"
 
     return Response(
-        content=pdf_path.read_bytes(),
+        content=path.read_bytes(),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-@app.get("/api/drawings/{drawing_id}/download")
-async def download_all_layouts(drawing_id: str):
-    record = storage.load_metadata(drawing_id)
-    if record is None:
-        raise HTTPException(404, "Drawing not found.")
-    if record["status"] != DrawingStatus.ready:
-        raise HTTPException(409, "Drawing is not ready yet.")
-
-    layouts = record.get("layouts", [])
-    layouts_path = storage.layouts_dir(drawing_id)
-    zip_bytes = splitter.build_zip(str(layouts_path), layouts)
-
-    base = Path(record["filename"]).stem
-    return Response(
-        content=zip_bytes,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{base}_layouts.zip"'},
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )
 
 

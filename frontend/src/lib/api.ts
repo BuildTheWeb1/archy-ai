@@ -16,9 +16,6 @@ export const api = {
     return res.data;
   },
 
-  layoutPdfUrl: (drawingId: string, index: number): string =>
-    `http://localhost:8000/api/drawings/${drawingId}/layouts/${index}/pdf`,
-
-  downloadAllUrl: (drawingId: string): string =>
-    `http://localhost:8000/api/drawings/${drawingId}/download`,
+  drawingPdfUrl: (drawingId: string): string =>
+    `http://localhost:8000/api/drawings/${drawingId}/pdf`,
 };

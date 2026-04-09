@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import { LayoutList } from "./LayoutList";
 
 interface Props {
   drawingId: string;
@@ -33,7 +32,7 @@ export function DrawingDetail({ drawingId }: Props) {
           <div className="w-12 h-12 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
           <p className="text-slate-700 font-semibold mb-1">Se procesează desenul…</p>
           <p className="text-slate-400 text-sm">
-            {data?.filename ?? "Se extrag planșele, poate dura ~30 secunde."}
+            {data?.filename ?? "Conversia poate dura ~30–60 secunde."}
           </p>
         </div>
       </div>
@@ -66,33 +65,41 @@ export function DrawingDetail({ drawingId }: Props) {
   }
 
   // ready
+  const pdfUrl = api.drawingPdfUrl(drawingId);
+
   return (
-    <div className="min-h-screen bg-slate-50">
-      <div className="max-w-5xl mx-auto px-6 py-8">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <a href="/" className="text-blue-600 text-sm hover:underline mb-1 block">
-              ← Încarcă alt fișier
-            </a>
-            <h1 className="text-2xl font-bold text-slate-900">{data.filename}</h1>
-            <p className="text-slate-500 text-sm mt-1">
-              {data.layouts.length} planș{data.layouts.length === 1 ? "ă" : "e"} extrase
-            </p>
-          </div>
-          <a
-            href={api.downloadAllUrl(drawingId)}
-            className="inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-            </svg>
-            Descarcă tot (.zip)
+    <div className="min-h-screen bg-slate-900 flex flex-col">
+      {/* Top bar */}
+      <div className="bg-slate-800 border-b border-slate-700 px-6 py-3 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-4">
+          <a href="/" className="text-slate-400 hover:text-white text-sm transition-colors">
+            ← Încarcă alt fișier
           </a>
+          <span className="text-slate-600">|</span>
+          <span className="text-slate-200 text-sm font-medium truncate max-w-xs">
+            {data.filename}
+          </span>
         </div>
 
-        <LayoutList drawingId={drawingId} layouts={data.layouts} />
+        <a
+          href={`${pdfUrl}?download=1`}
+          download={data.filename.replace(/\.[^.]+$/, ".pdf")}
+          className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+          Descarcă PDF
+        </a>
       </div>
+
+      {/* PDF preview */}
+      <iframe
+        src={pdfUrl}
+        className="flex-1 w-full border-0"
+        title={data.filename}
+      />
     </div>
   );
 }

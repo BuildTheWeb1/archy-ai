@@ -17,9 +17,7 @@ export function FileUpload() {
 
   const handleFile = (file: File) => {
     const ext = file.name.toLowerCase();
-    if (!ext.endsWith(".dwg") && !ext.endsWith(".dxf")) {
-      return;
-    }
+    if (!ext.endsWith(".dwg") && !ext.endsWith(".dxf") && !ext.endsWith(".pdf")) return;
     upload.mutate(file);
   };
 
@@ -41,7 +39,7 @@ export function FileUpload() {
         <div className="text-center mb-10">
           <h1 className="text-3xl font-bold text-slate-900 mb-2">ArchyAI</h1>
           <p className="text-slate-500 text-base">
-            Încarcă un fișier DWG — primești toate planșele ca PDF-uri separate, gata de printat.
+            Încarcă un fișier DWG sau PDF — primești un PDF de înaltă rezoluție, gata de printat.
           </p>
         </div>
 
@@ -61,7 +59,7 @@ export function FileUpload() {
           <input
             ref={inputRef}
             type="file"
-            accept=".dwg,.dxf"
+            accept=".dwg,.dxf,.pdf"
             className="hidden"
             onChange={onInputChange}
           />
@@ -82,7 +80,7 @@ export function FileUpload() {
               <p className="text-slate-700 font-semibold mb-1">
                 Trage fișierul aici sau <span className="text-blue-600">alege din calculator</span>
               </p>
-              <p className="text-slate-400 text-sm">Fișiere .dwg sau .dxf</p>
+              <p className="text-slate-400 text-sm">Fișiere .dwg, .dxf sau .pdf</p>
             </>
           )}
         </div>
@@ -93,17 +91,6 @@ export function FileUpload() {
               ?? "Încărcarea a eșuat. Încearcă din nou."}
           </div>
         )}
-
-        <div className="mt-8 grid grid-cols-2 gap-4 text-center">
-          <div className="bg-white rounded-xl p-4 border border-slate-200">
-            <div className="text-2xl font-bold text-blue-600 mb-1">30s</div>
-            <div className="text-slate-500 text-sm">în loc de 2–4 ore manual</div>
-          </div>
-          <div className="bg-white rounded-xl p-4 border border-slate-200">
-            <div className="text-2xl font-bold text-blue-600 mb-1">PDF/A3</div>
-            <div className="text-slate-500 text-sm">fiecare planșă separat</div>
-          </div>
-        </div>
       </div>
     </div>
   );

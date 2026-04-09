@@ -1,161 +1,278 @@
 """
-DWG → per-layout A3 PDFs via ODA File Converter + ezdxf rendering.
+DWG/DXF → PDF via Autodesk Platform Services (APS) Model Derivative API.
 
 Pipeline:
-  1. ODA File Converter reads the .dwg natively (via ezdxf.addons.odafc)
-  2. ezdxf enumerates all Paper Space layouts
-  3. Each layout is rendered to an A3 PDF with black lines on white background
-     (print-ready) using ezdxf's drawing add-on + matplotlib
+  1. Authenticate with APS (2-legged OAuth)
+  2. Create/ensure an OSS bucket
+  3. Upload DWG/DXF to OSS via signed S3 URL
+  4. Submit a Model Derivative translation job (DWG → PDF)
+  5. Poll the manifest until translation succeeds or fails
+  6. Download the resulting PDF
 
-Requires ODA File Converter installed. On macOS set ODA_FILE_CONVERTER env var
-to the binary path (e.g. /Applications/ODAFileConverter.app/Contents/MacOS/ODAFileConverter).
+Requires APS_CLIENT_ID and APS_CLIENT_SECRET env vars.
 """
 
+import base64
 import logging
 import os
 import time
 from pathlib import Path
 
-import ezdxf
-from ezdxf.addons.drawing import Frontend, RenderContext
-from ezdxf.addons.drawing import matplotlib as mpl_backend
-from ezdxf.addons.drawing.config import (
-    BackgroundPolicy,
-    ColorPolicy,
-    Configuration,
-)
-
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+import requests
 
 logger = logging.getLogger(__name__)
 
-# A3 landscape: 420 × 297 mm  →  inches for matplotlib
-_A3_WIDTH_IN = 420 / 25.4  # ≈ 16.535
-_A3_HEIGHT_IN = 297 / 25.4  # ≈ 11.693
-
-# Print-ready config: all entities rendered in black on white
-_RENDER_CONFIG = Configuration(
-    color_policy=ColorPolicy.BLACK,
-    background_policy=BackgroundPolicy.WHITE,
-)
+APS_BASE      = "https://developer.api.autodesk.com"
+BUCKET_KEY    = "archyai-drawings"
+POLL_INTERVAL = 10   # seconds between manifest polls
+POLL_TIMEOUT  = 600  # 10 minutes
 
 
-def _ensure_oda() -> None:
-    """Configure and verify ODA File Converter is available."""
-    oda_path = os.environ.get("ODA_FILE_CONVERTER", "").strip()
-    if oda_path:
-        ezdxf.options.set("odafc-addon", "unix_exec_path", oda_path)
+class ConversionError(Exception):
+    pass
 
-    from ezdxf.addons import odafc
 
-    if not odafc.is_installed():
-        raise RuntimeError(
-            "ODA File Converter is not installed or not found. "
-            "Set ODA_FILE_CONVERTER to the binary path."
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
+def _get_credentials() -> tuple[str, str]:
+    client_id     = os.environ.get("APS_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("APS_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        raise ConversionError(
+            "APS_CLIENT_ID and APS_CLIENT_SECRET must be set in .env"
+        )
+    return client_id, client_secret
+
+
+def _get_token(client_id: str, client_secret: str) -> str:
+    """Obtain a 2-legged OAuth access token from APS."""
+    resp = requests.post(
+        f"{APS_BASE}/authentication/v2/token",
+        data={
+            "grant_type":    "client_credentials",
+            "client_id":     client_id,
+            "client_secret": client_secret,
+            "scope":         "data:read data:write data:create bucket:create bucket:read bucket:update code:all",
+        },
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise ConversionError(f"APS auth failed ({resp.status_code}): {resp.text}")
+    return resp.json()["access_token"]
+
+
+# ---------------------------------------------------------------------------
+# OSS — Object Storage Service
+# ---------------------------------------------------------------------------
+
+def _ensure_bucket(token: str) -> None:
+    """Create the OSS bucket if it does not already exist."""
+    resp = requests.post(
+        f"{APS_BASE}/oss/v2/buckets",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"bucketKey": BUCKET_KEY, "policyKey": "temporary"},
+        timeout=30,
+    )
+    # 409 = bucket already exists — fine
+    if resp.status_code not in (200, 201, 409):
+        raise ConversionError(f"OSS bucket creation failed ({resp.status_code}): {resp.text}")
+
+
+def _upload_to_oss(token: str, object_key: str, file_path: Path) -> str:
+    """
+    Upload a file to OSS via signed S3 URL.
+    Returns the full OSS object URN (not yet base64-encoded).
+    """
+    init_resp = requests.get(
+        f"{APS_BASE}/oss/v2/buckets/{BUCKET_KEY}/objects/{object_key}/signeds3upload",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"minutesExpiration": 60},
+        timeout=30,
+    )
+    if init_resp.status_code != 200:
+        raise ConversionError(f"OSS signed upload URL failed ({init_resp.status_code}): {init_resp.text}")
+
+    upload_data = init_resp.json()
+    upload_key  = upload_data["uploadKey"]
+    s3_url      = upload_data["urls"][0]
+
+    logger.info("Uploading %s to APS OSS…", file_path.name)
+    with open(file_path, "rb") as fh:
+        put_resp = requests.put(
+            s3_url,
+            data=fh,
+            headers={"Content-Type": "application/octet-stream"},
+            timeout=300,
+        )
+    if put_resp.status_code not in (200, 204):
+        raise ConversionError(f"S3 upload failed ({put_resp.status_code}): {put_resp.text}")
+
+    fin_resp = requests.post(
+        f"{APS_BASE}/oss/v2/buckets/{BUCKET_KEY}/objects/{object_key}/signeds3upload",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"uploadKey": upload_key},
+        timeout=30,
+    )
+    if fin_resp.status_code not in (200, 201):
+        raise ConversionError(f"OSS upload finalization failed ({fin_resp.status_code}): {fin_resp.text}")
+
+    fin_data = fin_resp.json()
+    logger.info("Finalize response: %s", fin_data)
+    urn = fin_data["objectId"]
+    logger.info("Upload complete. URN: %s", urn)
+    return urn
+
+
+def _encode_urn(urn: str) -> str:
+    return base64.urlsafe_b64encode(urn.encode()).decode().rstrip("=")
+
+
+# ---------------------------------------------------------------------------
+# Model Derivative — translation job
+# ---------------------------------------------------------------------------
+
+def _submit_translation(token: str, encoded_urn: str) -> None:
+    payload = {
+        "input": {
+            "urn": encoded_urn,
+            "compressedUrn": False,
+        },
+        "output": {
+            "formats": [
+                {
+                    "type": "pdf",
+                }
+            ],
+        },
+    }
+    logger.info("Submitting translation job. encoded_urn=%s payload=%s", encoded_urn, payload)
+    resp = requests.post(
+        f"{APS_BASE}/modelderivative/v2/designdata/job",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type":  "application/json",
+        },
+        json=payload,
+        timeout=30,
+    )
+    logger.info("Translation job response (%s): %s", resp.status_code, resp.text)
+    if resp.status_code not in (200, 201):
+        raise ConversionError(f"Translation job submission failed ({resp.status_code}): {resp.text}")
+    logger.info("Translation job submitted.")
+
+
+def _poll_manifest(token: str, encoded_urn: str) -> dict:
+    """Poll until translation succeeds or fails. Returns the manifest."""
+    start = time.time()
+    while time.time() - start < POLL_TIMEOUT:
+        resp = requests.get(
+            f"{APS_BASE}/modelderivative/v2/designdata/{encoded_urn}/manifest",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            raise ConversionError(f"Manifest poll failed ({resp.status_code}): {resp.text}")
+
+        manifest = resp.json()
+        status   = manifest.get("status", "")
+        progress = manifest.get("progress", "")
+        logger.info("Translation status: %s  %s", status, progress)
+
+        if status == "success":
+            return manifest
+        if status == "failed":
+            messages = [
+                msg.get("message", "")
+                for d in manifest.get("derivatives", [])
+                for msg in d.get("messages", [])
+            ]
+            raise ConversionError(f"Translation failed: {'; '.join(messages) or 'unknown error'}")
+
+        time.sleep(POLL_INTERVAL)
+
+    raise ConversionError(f"Translation timed out after {POLL_TIMEOUT}s")
+
+
+def _find_pdf_derivative(manifest: dict) -> dict | None:
+    for derivative in manifest.get("derivatives", []):
+        if derivative.get("outputType") == "pdf":
+            for child in derivative.get("children", []):
+                if child.get("mime") == "application/pdf":
+                    return child
+    return None
+
+
+def _download_derivative(token: str, encoded_urn: str, derivative_urn: str, output_path: Path) -> None:
+    encoded_deriv = requests.utils.quote(derivative_urn, safe="")
+    resp = requests.get(
+        f"{APS_BASE}/modelderivative/v2/designdata/{encoded_urn}/manifest/{encoded_deriv}/signedcookies",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    if resp.status_code == 200:
+        policy  = resp.json()
+        dl_url  = policy.get("url", "")
+        dl_resp = requests.get(dl_url, cookies=resp.cookies, timeout=300)
+    else:
+        dl_resp = requests.get(
+            f"{APS_BASE}/modelderivative/v2/designdata/{encoded_urn}/manifest/{encoded_deriv}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=300,
         )
 
+    if dl_resp.status_code != 200:
+        raise ConversionError(f"Derivative download failed ({dl_resp.status_code}): {dl_resp.text[:200]}")
 
-def convert_dwg_to_pdfs(dwg_path: str, layouts_dir: str) -> list[dict]:
+    output_path.write_bytes(dl_resp.content)
+    logger.info("Downloaded PDF: %s (%d KB)", output_path.name, len(dl_resp.content) // 1024)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def convert_dwg_to_pdf(dwg_path: str, output_dir: str) -> Path:
     """
-    Convert a DWG file to individual layout PDFs.
+    Convert a DWG/DXF file to a PDF via APS Model Derivative API.
 
-    Reads the DWG via ODA File Converter, then renders each Paper Space
-    layout to an A3 PDF with black lines on white background.
-
-    Returns list of {"index": int, "name": str} for each layout.
-    Raises RuntimeError on failure.
+    Returns the Path to the output PDF.
+    Raises ConversionError or RuntimeError on failure.
     """
     dwg = Path(dwg_path)
-    out = Path(layouts_dir)
+    out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
     if not dwg.exists():
-        raise RuntimeError(f"DWG file not found: {dwg}")
+        raise RuntimeError(f"File not found: {dwg}")
+    ext = dwg.suffix.lower()
+    if ext not in (".dwg", ".dxf"):
+        raise RuntimeError(f"Unsupported file format: {ext}")
 
-    suffix = dwg.suffix.lower()
-    if suffix == ".dxf":
-        doc = _read_dxf(dwg)
-    elif suffix == ".dwg":
-        doc = _read_dwg(dwg)
-    else:
-        raise RuntimeError(f"Unsupported file format: {suffix}")
+    logger.info("Converting %s via APS…", dwg.name)
 
-    # Collect non-empty Paper Space layouts
-    paper_layouts = []
-    for layout in doc.layouts:
-        if layout.is_modelspace:
-            continue
-        if not list(layout):
-            logger.info("Skipping empty layout: %s", layout.name)
-            continue
-        paper_layouts.append(layout)
+    client_id, client_secret = _get_credentials()
+    token = _get_token(client_id, client_secret)
 
-    if not paper_layouts:
-        raise RuntimeError(
-            "No Paper Space layouts with content found in the drawing."
-        )
+    object_key = f"{dwg.stem}_{int(time.time())}{ext}"
 
-    logger.info(
-        "Found %d paper space layout(s): %s",
-        len(paper_layouts),
-        [l.name for l in paper_layouts],
-    )
+    _ensure_bucket(token)
+    urn         = _upload_to_oss(token, object_key, dwg)
+    encoded_urn = _encode_urn(urn)
 
-    # Render each layout to A3 PDF
-    ctx = RenderContext(doc)
-    results = []
-    for i, layout in enumerate(paper_layouts):
-        start = time.time()
-        pdf_path = out / f"{i}.pdf"
-        _render_layout(doc, ctx, layout, pdf_path)
-        elapsed = time.time() - start
+    _submit_translation(token, encoded_urn)
+    manifest = _poll_manifest(token, encoded_urn)
 
-        logger.info(
-            "  Layout %d: %s (%d bytes, %.1fs)",
-            i,
-            layout.name,
-            pdf_path.stat().st_size,
-            elapsed,
-        )
-        results.append({"index": i, "name": layout.name})
+    # Refresh token — poll can take several minutes
+    token = _get_token(client_id, client_secret)
 
-    return results
+    pdf_child = _find_pdf_derivative(manifest)
+    if pdf_child is None:
+        raise ConversionError("No PDF derivative found in translation manifest.")
 
+    pdf_path = out / "output.pdf"
+    _download_derivative(token, encoded_urn, pdf_child["urn"], pdf_path)
 
-def _read_dwg(dwg_path: Path) -> ezdxf.document.Drawing:
-    """Read a DWG file using ODA File Converter."""
-    _ensure_oda()
-    from ezdxf.addons import odafc
-
-    logger.info("Reading DWG via ODA: %s", dwg_path.name)
-    return odafc.readfile(str(dwg_path))
-
-
-def _read_dxf(dxf_path: Path) -> ezdxf.document.Drawing:
-    """Read a DXF file directly with ezdxf."""
-    logger.info("Reading DXF: %s", dxf_path.name)
-    return ezdxf.readfile(str(dxf_path))
-
-
-def _render_layout(
-    doc: ezdxf.document.Drawing,
-    ctx: RenderContext,
-    layout: ezdxf.layouts.BaseLayout,
-    pdf_path: Path,
-) -> None:
-    """Render a single layout to an A3 landscape PDF (black on white)."""
-    fig = plt.figure(figsize=(_A3_WIDTH_IN, _A3_HEIGHT_IN))
-    ax = fig.add_axes([0, 0, 1, 1])
-
-    backend = mpl_backend.MatplotlibBackend(ax)
-    Frontend(ctx, backend, config=_RENDER_CONFIG).draw_layout(layout)
-
-    ax.set_facecolor("white")
-    fig.patch.set_facecolor("white")
-    ax.set_axis_off()
-
-    fig.savefig(str(pdf_path), facecolor="white")
-    plt.close(fig)
+    logger.info("Conversion complete: %s", pdf_path)
+    return pdf_path

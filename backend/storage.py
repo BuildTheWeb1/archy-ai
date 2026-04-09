@@ -4,10 +4,9 @@ Local file-based storage with JSON metadata.
 Structure:
   uploads/
     {drawing_id}/
-      metadata.json        — DrawingRecord dict
-      original.dwg/.dxf    — uploaded file
-      layouts/
-        0.pdf, 1.pdf, …   — per-layout PDFs rendered by ezdxf
+      metadata.json     — DrawingRecord dict
+      original.dwg/.dxf — uploaded file
+      output.pdf        — converted PDF
 """
 
 import json
@@ -26,12 +25,6 @@ def new_drawing_id() -> str:
 def drawing_dir(drawing_id: str) -> Path:
     d = UPLOADS_DIR / drawing_id
     d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def layouts_dir(drawing_id: str) -> Path:
-    d = drawing_dir(drawing_id) / "layouts"
-    d.mkdir(exist_ok=True)
     return d
 
 
@@ -61,22 +54,13 @@ def update_status(drawing_id: str, status: str, error: str | None = None) -> Non
     save_metadata(record)
 
 
-def update_layouts(drawing_id: str, layouts: list[dict]) -> None:
-    record = load_metadata(drawing_id)
-    if record is None:
-        return
-    record["layouts"] = layouts
-    save_metadata(record)
-
-
 # ---------------------------------------------------------------------------
 # File paths
 # ---------------------------------------------------------------------------
 
 def original_path(drawing_id: str, ext: str = ".dwg") -> Path:
-    """Return the path for the uploaded original file (.dwg or .dxf)."""
     return drawing_dir(drawing_id) / f"original{ext}"
 
 
-def layout_pdf_path(drawing_id: str, index: int) -> Path:
-    return layouts_dir(drawing_id) / f"{index}.pdf"
+def pdf_path(drawing_id: str) -> Path:
+    return drawing_dir(drawing_id) / "output.pdf"

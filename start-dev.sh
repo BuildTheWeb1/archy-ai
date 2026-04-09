@@ -11,15 +11,6 @@ if [ -f "$ROOT/.env" ]; then
   echo "Loaded .env"
 fi
 
-# ── ODA File Converter (for DWG support) ──────────────────────────────────────
-if [ -z "$ODA_FILE_CONVERTER" ]; then
-  ODA_DEFAULT="/Applications/ODAFileConverter.app/Contents/MacOS/ODAFileConverter"
-  if [ -f "$ODA_DEFAULT" ]; then
-    export ODA_FILE_CONVERTER="$ODA_DEFAULT"
-    echo "Using ODA File Converter: $ODA_DEFAULT"
-  fi
-fi
-
 # ── Backend ────────────────────────────────────────────────────────────────────
 echo "Starting backend on http://localhost:8000 ..."
 (
