@@ -106,8 +106,8 @@ async def upload_pdfs(
     if record is None:
         raise HTTPException(404, "Proiectul nu a fost găsit.")
 
-    if len(files) > 10:
-        raise HTTPException(400, "Maxim 10 fișiere per încărcare.")
+    if len(files) > 20:
+        raise HTTPException(400, "Maxim 20 fișiere per încărcare.")
 
     uploaded: list[PDFInfo] = []
     for file in files:
