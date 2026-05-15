@@ -39,10 +39,18 @@ function ProjectDetailPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["project", projectId] }),
   });
 
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
   const handleFiles = (fileList: FileList | null) => {
     if (!fileList) return;
+    setUploadError(null);
     const pdfs = Array.from(fileList).filter((f) => f.name.toLowerCase().endsWith(".pdf"));
     if (pdfs.length === 0) return;
+    const totalPdfs = project ? project.pdfs.length + pdfs.length : pdfs.length;
+    if (totalPdfs > 4) {
+      setUploadError(`Maxim 4 planșe per proiect. Ai deja ${project?.pdfs.length ?? 0}, ai selectat ${pdfs.length}.`);
+      return;
+    }
     uploadMutation.mutate(pdfs);
   };
 
@@ -172,14 +180,14 @@ function ProjectDetailPage() {
                 Trage fișierele aici sau{" "}
                 <span className="text-blue-600 underline underline-offset-2">alege din calculator</span>
               </p>
-              <p className="text-slate-400 text-xs mt-1">Selectează mai multe PDF-uri deodată · maxim 10</p>
+              <p className="text-slate-400 text-xs mt-1">Selectează 1–4 planșe PDF de armare</p>
             </div>
           )}
         </div>
 
-        {uploadMutation.isError && (
+        {(uploadMutation.isError || uploadError) && (
           <p className="text-red-600 text-sm mt-2">
-            Eroare la încărcare. Verificați că sunt fișiere PDF valide.
+            {uploadError || "Eroare la încărcare. Verificați că sunt fișiere PDF valide."}
           </p>
         )}
 

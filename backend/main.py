@@ -2,6 +2,11 @@ import logging
 import shutil
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load .env from repo root (parent of backend/)
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -106,8 +111,8 @@ async def upload_pdfs(
     if record is None:
         raise HTTPException(404, "Proiectul nu a fost găsit.")
 
-    if len(files) > 20:
-        raise HTTPException(400, "Maxim 20 fișiere per încărcare.")
+    if len(files) > 4:
+        raise HTTPException(400, "Maxim 4 fișiere per încărcare.")
 
     uploaded: list[PDFInfo] = []
     for file in files:

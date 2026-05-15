@@ -1,99 +1,116 @@
 """
-Pipeline orchestrator: runs all extraction steps for a list of PDF files
+Pipeline orchestrator: runs vision-based extraction for a list of PDF files
 and returns schedule rows + warnings.
 
 Steps:
-  1. Extract text / tables / rotated chars from each PDF (extractor.py)
-  2. If an embedded schedule table is found, use it (parser.py)
-  3. Otherwise parse rebar labels from upright text (parser.py)
-  4. If >50% of chars on a page are rotated, also parse rotated lines (rotated.py)
-  5. Aggregate all marks across PDFs (aggregator.py)
+  1. Convert PDF pages to images (PyMuPDF)
+  2. Send all images to Claude Vision API with specialised prompt
+  3. Parse structured JSON response into marks
+  4. Build schedule rows with weight calculations
 """
 
 import logging
 from pathlib import Path
 
-from pipeline.aggregator import aggregate_marks
-from pipeline.extractor import extract_pdf
-from pipeline.models import RebarMark
-from pipeline.parser import parse_embedded_schedule, parse_rebar_label
-from pipeline.rotated import reconstruct_rotated_text
+from pipeline.vision_extractor import extract_with_vision
+from pipeline.weights import build_schedule_row
 
 logger = logging.getLogger(__name__)
 
 
 def run_pipeline(pdf_paths: list[Path]) -> tuple[list[dict], list[str]]:
     """
-    Run the full extraction pipeline over *pdf_paths*.
+    Run the vision extraction pipeline over *pdf_paths*.
 
     Returns:
         (rows, warnings) where rows is a list of schedule row dicts
         ready to be stored in metadata.json.
     """
-    all_marks: list[RebarMark] = []
     global_warnings: list[str] = []
 
-    for pdf_path in pdf_paths:
-        logger.info("Processing %s", pdf_path.name)
+    # ── Step 1-2: Vision extraction ──────────────────────────────────
+    try:
+        marks, vision_warnings = extract_with_vision(pdf_paths)
+        global_warnings.extend(vision_warnings)
+        logger.info("Vision extraction returned %d marks:", len(marks))
+        for m in marks:
+            logger.info("  Mark %s: Ø%s, %s buc, L=%s, conf=%s, src=%s",
+                        m.get("mark"), m.get("diameter"), m.get("count"),
+                        m.get("length"), m.get("confidence"), m.get("source"))
+    except Exception as exc:
+        msg = f"Eroare la extracția cu AI: {exc}"
+        logger.error(msg, exc_info=True)
+        return [], [msg]
 
-        try:
-            extracted = extract_pdf(pdf_path)
-        except Exception as exc:
-            msg = f"{pdf_path.name}: eroare la extracție — {exc}"
-            logger.error(msg)
-            global_warnings.append(msg)
-            continue
-
-        # ── Step 2: embedded schedule ─────────────────────────────────
-        if extracted["has_embedded_schedule"] and extracted["tables"]:
-            embedded_rows = parse_embedded_schedule(extracted["tables"])
-            if embedded_rows:
-                logger.info(
-                    "Using embedded schedule from %s (%d rows)",
-                    pdf_path.name,
-                    len(embedded_rows),
-                )
-                # Embedded schedules are authoritative — return immediately
-                _, agg_warnings = aggregate_marks([])
-                return embedded_rows, agg_warnings
-
-        # ── Step 3: parse upright text ────────────────────────────────
-        upright_text = extracted["upright_text"]
-        for line in upright_text.splitlines():
-            mark = parse_rebar_label(line.strip())
-            if mark:
-                all_marks.append(mark)
-
-        # ── Step 4: rotated text ──────────────────────────────────────
-        rotated_chars = extracted["rotated_chars"]
-        all_chars_estimate = len(upright_text)
-        if rotated_chars and all_chars_estimate > 0:
-            rotated_ratio = len(rotated_chars) / max(all_chars_estimate, 1)
-        else:
-            rotated_ratio = 0.0
-
-        if rotated_chars and (rotated_ratio > 0.1 or len(rotated_chars) > 50):
-            rotated_lines = reconstruct_rotated_text(rotated_chars)
-            added = 0
-            for line in rotated_lines:
-                mark = parse_rebar_label(line.strip())
-                if mark:
-                    mark.confidence = "low"
-                    all_marks.append(mark)
-                    added += 1
-            if added:
-                logger.info("Added %d marks from rotated text in %s", added, pdf_path.name)
-
-    if not all_marks:
+    if not marks:
         global_warnings.append(
-            "Nu s-au găsit etichete de armare în PDF-urile încărcate. "
-            "Verificați că PDF-urile conțin text (nu sunt scanate)."
+            "Nu s-au găsit date de armare în PDF-urile încărcate. "
+            "Verificați că PDF-urile conțin planșe de armare lizibile."
         )
         return [], global_warnings
 
-    # ── Step 5: aggregate ─────────────────────────────────────────────
-    rows, agg_warnings = aggregate_marks(all_marks)
-    global_warnings.extend(agg_warnings)
+    # ── Step 3: Build schedule rows ──────────────────────────────────
+    rows: list[dict] = []
+    seen_marks: set[int] = set()
 
-    logger.info("Pipeline complete: %d rows, %d warnings", len(rows), len(global_warnings))
+    for m in marks:
+        mark_no = m.get("mark")
+        diameter = m.get("diameter")
+        count = m.get("count", 1)
+        length = m.get("length", 0.0)
+        confidence = m.get("confidence", "medium")
+
+        if diameter is None:
+            global_warnings.append(
+                f"Marcă ignorată (diametru lipsă): {m}"
+            )
+            continue
+
+        # Validate types
+        try:
+            diameter = int(diameter)
+            count = int(count) if count else 1
+            length = float(length) if length else 0.0
+            if mark_no is not None:
+                mark_no = int(mark_no)
+        except (ValueError, TypeError) as exc:
+            global_warnings.append(
+                f"Valori invalide pentru marca {mark_no}: {exc}"
+            )
+            continue
+
+        row_warnings: list[str] = []
+
+        if length <= 0:
+            row_warnings.append(
+                f"Marca {mark_no or '?'}: lungime lipsă — necesită verificare"
+            )
+            confidence = "low"
+
+        # Deduplicate: if same mark appears from both table and drawing,
+        # prefer the table source
+        if mark_no is not None and mark_no in seen_marks:
+            # Skip duplicate — the first one (from table if available) wins
+            continue
+        if mark_no is not None:
+            seen_marks.add(mark_no)
+
+        row = build_schedule_row(
+            mark=mark_no,
+            diameter=diameter,
+            count=count,
+            length=length,
+            confidence=confidence,
+            warnings=row_warnings,
+        )
+        rows.append(row.to_dict())
+
+    # Sort by mark number (None marks go to end)
+    rows.sort(key=lambda r: (r["mark"] is None, r["mark"] or 0))
+
+    logger.info(
+        "Pipeline complete: %d rows, %d warnings",
+        len(rows),
+        len(global_warnings),
+    )
     return rows, global_warnings

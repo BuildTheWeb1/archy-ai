@@ -100,26 +100,25 @@ GET   /api/drawings/{id}/download       Download ZIP of all layouts
 GET   /health
 ```
 
-## Processing Pipeline
+## Processing Pipeline (Rebar Extraction)
 
 ```
-User uploads .dwg or .dxf
+User uploads 1–4 PDF planșe de armare
       ↓
-POST /api/drawings/upload
-  → saves file to uploads/{id}/original.dwg (or .dxf)
-  → sets status = "processing"
-  → returns {id, status: "processing"} immediately
+POST /api/projects/{id}/pdfs → saves PDFs
+POST /api/projects/{id}/extract → triggers background extraction
       ↓
-Background task (_process_drawing):
-  1. Authenticate with Autodesk Platform Services (APS)
-  2. Upload DWG/DXF to APS Object Storage
-  3. Submit Model Derivative translation job (PDF output)
-  4. Poll until translation completes
-  5. Download combined PDF, split into per-page PDFs (PyMuPDF)
-  6. Update metadata.json: status = "ready", layouts = [{index, name}]
+Background task (_extract_task):
+  1. Convert each PDF page to 200 DPI PNG images (PyMuPDF)
+  2. Send all images to Claude Vision API (claude-sonnet-4-20250514)
+     with specialised Romanian structural engineering prompt
+  3. Claude returns structured JSON: marks, diameters, counts, lengths
+  4. Build schedule rows with weight calculations (kg/m constants)
+  5. Save schedule to metadata.json
       ↓
-Frontend polls GET /api/drawings/{id} every 2s
-  → When status = "ready": shows layout list with download buttons
+Frontend polls GET /api/projects/{id} every 2s
+  → When status = "ready": shows editable schedule table
+  → Engineer reviews, corrects if needed, then exports to Excel
 ```
 
 ## Development Guidelines
