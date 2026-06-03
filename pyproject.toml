@@ -1,0 +1,6 @@
+[project]
+name = "archyai-backend"
+requires-python = ">=3.12"
+
+[project.scripts]
+app = "backend.main:app"

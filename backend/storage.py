@@ -17,7 +17,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-UPLOADS_DIR = Path(__file__).parent / "uploads"
+if os.environ.get("VERCEL"):
+    UPLOADS_DIR = Path("/tmp/uploads")
+else:
+    UPLOADS_DIR = Path(__file__).parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
 
 

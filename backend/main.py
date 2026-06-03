@@ -1,4 +1,5 @@
 import logging
+import os
 import shutil
 from pathlib import Path
 
@@ -31,9 +32,14 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="ArchyAI")
 
+_allowed_origins = ["http://localhost:5173"]
+_frontend_url = os.environ.get("FRONTEND_URL")
+if _frontend_url:
+    _allowed_origins.append(_frontend_url.rstrip("/"))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=_allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
