@@ -277,6 +277,6 @@ async def export_xlsx(project_id: str):
 
 # ── Health ─────────────────────────────────────────────────────────────────
 
-@app.get("/health")
+@app.get("/api/health")
 async def health():
     return {"status": "ok"}

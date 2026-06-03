@@ -2,7 +2,7 @@ import axios from "axios";
 import type { PDFInfo, Project, Schedule, ScheduleRow } from "../types";
 
 const client = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || "http://localhost:8000",
+  baseURL: import.meta.env.VITE_API_URL || "",
 });
 
 export const api = {
@@ -72,5 +72,5 @@ export const api = {
   },
 
   xlsxUrl: (projectId: string): string =>
-  `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/api/projects/${projectId}/schedule/xlsx`,
+    `/api/projects/${projectId}/schedule/xlsx`,
 };
