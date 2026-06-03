@@ -65,8 +65,21 @@ export function ScheduleTable({ rows, onChange }: Props) {
 
   const addRow = useCallback(() => onChange([...rows, newRow()]), [rows, onChange]);
 
-  // Totals
-  const grandTotal = rows.reduce((s, r) => s + r.weight, 0);
+  // Distinct diameters present in the data, sorted ascending
+  const distinctDiameters = [...new Set(rows.map((r) => r.diameter))].sort((a, b) => a - b);
+
+  // Per-diameter totals
+  const lengthPerDia: Record<number, number> = {};
+  for (const d of distinctDiameters) {
+    lengthPerDia[d] = Math.round(
+      rows.filter((r) => r.diameter === d).reduce((s, r) => s + r.total_length, 0) * 10
+    ) / 10;
+  }
+  const weightPerDia: Record<number, number> = {};
+  for (const d of distinctDiameters) {
+    weightPerDia[d] = Math.round(lengthPerDia[d] * WEIGHTS[d] * 10) / 10;
+  }
+  const grandTotal = Object.values(weightPerDia).reduce((s, w) => s + w, 0);
 
   const EditableNum = ({
     rowId,
@@ -109,17 +122,35 @@ export function ScheduleTable({ rows, onChange }: Props) {
     );
   };
 
+  const totalCols = 5 + distinctDiameters.length + 2; // Marca..Lung. + dia cols + Conf + delete
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm border-collapse">
         <thead>
+          {/* Row 1: main headers + grouped Lung./Ø header */}
           <tr className="bg-slate-800 text-white">
-            {[
-              "Marca", "Ø [mm]", "Oțel", "Buc.", "Lung. [m]",
-              "Lung./Ø [m]", "Masa Ø/m [kg/m]", "Masa/Ø [kg]", "Conf.", "",
-            ].map((h) => (
-              <th key={h} className="px-3 py-2 text-center font-semibold whitespace-nowrap">
-                {h}
+            <th rowSpan={2} className="px-3 py-2 text-center font-semibold whitespace-nowrap border-r border-slate-600">Marca</th>
+            <th rowSpan={2} className="px-3 py-2 text-center font-semibold whitespace-nowrap border-r border-slate-600">Ø [mm]</th>
+            <th rowSpan={2} className="px-3 py-2 text-center font-semibold whitespace-nowrap border-r border-slate-600">Oțel</th>
+            <th rowSpan={2} className="px-3 py-2 text-center font-semibold whitespace-nowrap border-r border-slate-600">Buc.</th>
+            <th rowSpan={2} className="px-3 py-2 text-center font-semibold whitespace-nowrap border-r border-slate-600">Lung. [m]</th>
+            {distinctDiameters.length > 0 && (
+              <th
+                colSpan={distinctDiameters.length}
+                className="px-3 py-1.5 text-center font-semibold whitespace-nowrap border-r border-slate-600 border-b border-slate-600"
+              >
+                Lung./Ø [m]
+              </th>
+            )}
+            <th rowSpan={2} className="px-3 py-2 text-center font-semibold whitespace-nowrap border-r border-slate-600">Conf.</th>
+            <th rowSpan={2} className="px-2 py-2 text-center font-semibold" />
+          </tr>
+          {/* Row 2: diameter sub-headers */}
+          <tr className="bg-slate-700 text-white">
+            {distinctDiameters.map((d) => (
+              <th key={d} className="px-3 py-1.5 text-center font-semibold whitespace-nowrap border-r border-slate-600 last:border-r-0">
+                Ø{d}
               </th>
             ))}
           </tr>
@@ -128,7 +159,7 @@ export function ScheduleTable({ rows, onChange }: Props) {
         <tbody>
           {rows.length === 0 && (
             <tr>
-              <td colSpan={10} className="text-center text-slate-400 py-8">
+              <td colSpan={totalCols} className="text-center text-slate-400 py-8">
                 Nicio înregistrare. Adăugați manual sau rulați extracția.
               </td>
             </tr>
@@ -193,14 +224,12 @@ export function ScheduleTable({ rows, onChange }: Props) {
                 <EditableNum rowId={row.id} field="length" value={row.length} min={0.01} step={0.01} />
               </td>
 
-              {/* Total length (computed) */}
-              <td className="px-3 py-1.5 text-right text-slate-500">{fmt(row.total_length)}</td>
-
-              {/* Weight/m (computed) */}
-              <td className="px-3 py-1.5 text-right text-slate-500">{row.weight_per_meter.toFixed(3)}</td>
-
-              {/* Weight (computed) */}
-              <td className="px-3 py-1.5 text-right font-medium">{fmt(row.weight)}</td>
+              {/* Lung./Ø per diameter — value only in matching column */}
+              {distinctDiameters.map((d) => (
+                <td key={d} className="px-3 py-1.5 text-right text-slate-500">
+                  {row.diameter === d ? fmt(row.total_length) : ""}
+                </td>
+              ))}
 
               {/* Confidence */}
               <td className="px-3 py-1.5 text-center">
@@ -223,9 +252,36 @@ export function ScheduleTable({ rows, onChange }: Props) {
 
         {rows.length > 0 && (
           <tfoot>
-            <tr className="bg-slate-100 font-semibold border-t-2 border-slate-300">
-              <td colSpan={7} className="px-3 py-2 text-right">TOTAL</td>
-              <td className="px-3 py-2 text-right">{fmt(grandTotal)} kg</td>
+            {/* Lungimi / Ø [m] */}
+            <tr className="bg-slate-100 border-t-2 border-slate-300">
+              <td colSpan={5} className="px-3 py-2 text-right font-semibold">Lungimi / Ø [m]</td>
+              {distinctDiameters.map((d) => (
+                <td key={d} className="px-3 py-2 text-right font-medium">{fmt(lengthPerDia[d])}</td>
+              ))}
+              <td colSpan={2} />
+            </tr>
+            {/* Masa Ø / m [kg/m] */}
+            <tr className="bg-slate-100">
+              <td colSpan={5} className="px-3 py-2 text-right font-semibold">Masa Ø / m [kg/m]</td>
+              {distinctDiameters.map((d) => (
+                <td key={d} className="px-3 py-2 text-right text-slate-500">{WEIGHTS[d].toFixed(3)}</td>
+              ))}
+              <td colSpan={2} />
+            </tr>
+            {/* Masa / Ø [kg] */}
+            <tr className="bg-slate-100">
+              <td colSpan={5} className="px-3 py-2 text-right font-semibold">Masa / Ø [kg]</td>
+              {distinctDiameters.map((d) => (
+                <td key={d} className="px-3 py-2 text-right font-medium">{fmt(weightPerDia[d])}</td>
+              ))}
+              <td colSpan={2} />
+            </tr>
+            {/* Masa totală [kg] */}
+            <tr className="bg-slate-200 font-bold border-t-2 border-slate-400">
+              <td colSpan={5} className="px-3 py-2 text-right">Masa totală [kg]</td>
+              <td colSpan={distinctDiameters.length} className="px-3 py-2 text-center text-lg">
+                {fmt(grandTotal)} kg
+              </td>
               <td colSpan={2} />
             </tr>
           </tfoot>
