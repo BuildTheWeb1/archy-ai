@@ -1,49 +1,39 @@
-# Archy AI — CAD Extract
+# ArchyAI
 
-> Extract structured data from DWG/DXF files and export to Excel or Google Sheets.
-> Built for construction firms and architecture practices.
+Automated rebar schedule extraction for Romanian structural engineers. Upload PDF structural drawings (planșe de armare), get back an editable "Extras de armătură" table with mark numbers, diameters, counts, lengths, and weights — ready to export as Excel.
 
----
+## How it works
 
-## What it does
-
-Upload an AutoCAD drawing → see every layer and entity type extracted → map layers to spreadsheet columns → export a clean `.xlsx` in one click. Reusable mapping templates eliminate repeat work across drawing sets.
-
-## Current status
-
-**Phase 1 — Localhost demo** (active)
-Core extraction loop works end-to-end on DXF files. DWG support ready pending ODA File Converter install. No auth, no cloud, no database — in-memory state for rapid validation.
-
-See [`logs/implementation.md`](logs/implementation.md) for a full development log.
-
----
+1. Create a project and upload 1–4 PDF pages (structural reinforcement drawings).
+2. The backend converts each page to a 300 DPI image, sends them to Claude Vision API with a specialised Romanian structural engineering prompt.
+3. Claude extracts raw data (mark numbers, diameters, piece counts, bar lengths). All arithmetic — total lengths, weights — is done in code, not by the AI.
+4. The frontend displays an editable schedule table grouped by diameter, matching the standard Romanian format. Engineers review, correct if needed, then export to `.xlsx`.
 
 ## Stack
 
 | Layer | Technology |
 |---|---|
-| Frontend | React 19 + TypeScript + Vite 6 |
-| Routing | TanStack Router (file-based) |
-| Server state | TanStack Query |
-| Styling | Tailwind CSS v4 |
-| Backend | Python 3.12+ + FastAPI |
-| DXF parsing | ezdxf |
-| DWG conversion | ODA File Converter / LibreDWG |
-| Export | openpyxl (.xlsx) |
-
----
+| Frontend | React 19, TypeScript, Vite, TanStack Router + Query, Tailwind CSS |
+| Backend | Python 3.12, FastAPI |
+| Vision AI | Claude Vision API (claude-sonnet-4-20250514) via `anthropic` SDK |
+| PDF → image | PyMuPDF (fitz) — 300 DPI PNG conversion |
+| Excel export | openpyxl |
 
 ## Getting started
 
 ### Prerequisites
 
 - Python 3.12+
-- Node.js 20.19+ (or 22+)
-- pnpm
+- Node.js 20+ and pnpm
+- An [Anthropic API key](https://console.anthropic.com/)
 
-### First-time setup
+### Setup
 
 ```bash
+# Clone and configure
+cp .env.example .env
+# Edit .env and add your ANTHROPIC_API_KEY
+
 # Backend
 cd backend
 python3 -m venv venv
@@ -58,7 +48,6 @@ pnpm install
 ### Run
 
 ```bash
-# From the project root — starts both servers
 ./start-dev.sh
 ```
 
@@ -68,95 +57,49 @@ pnpm install
 | API | http://localhost:8000 |
 | API docs | http://localhost:8000/docs |
 
-### Test with sample file
+## API
 
-A synthetic structural DXF is included:
-
-```bash
-# upload via curl
-curl -X POST http://localhost:8000/api/upload \
-  -F "file=@sample-files/sample.dxf"
-```
-
-Or drag-and-drop it in the UI.
-
----
-
-## DWG support
-
-DWG files require a converter. Install one of:
-
-**Option A — ODA File Converter** (recommended, free)
-1. Download from opendesign.com → Guest files → ODA File Converter
-2. Install to `/Applications/ODAFileConverter/`
-3. Restart the backend — DWG uploads will work automatically
-
-**Option B — LibreDWG**
-```bash
-# Build from source: https://www.gnu.org/software/libredwg/
-# Once dwg2dxf is in PATH, it will be picked up automatically
-```
-
----
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/projects` | Create a new project |
+| `GET` | `/api/projects` | List all projects |
+| `GET` | `/api/projects/{id}` | Get project details (poll for status) |
+| `DELETE` | `/api/projects/{id}` | Delete a project |
+| `POST` | `/api/projects/{id}/pdfs` | Upload 1–4 PDF pages |
+| `GET` | `/api/projects/{id}/pdfs` | List uploaded PDFs |
+| `POST` | `/api/projects/{id}/extract` | Trigger rebar extraction (async) |
+| `GET` | `/api/projects/{id}/schedule` | Get extracted schedule |
+| `PUT` | `/api/projects/{id}/schedule` | Save engineer's edits |
+| `GET` | `/api/projects/{id}/schedule/xlsx` | Download schedule as Excel |
+| `GET` | `/health` | Health check |
 
 ## Project structure
 
 ```
 archy-ai/
 ├── backend/
-│   ├── main.py           # FastAPI app + all route handlers
-│   ├── extractor.py      # ezdxf DXF parsing → structured JSON
-│   ├── exporter.py       # openpyxl .xlsx export
-│   ├── dwg_converter.py  # DWG→DXF via ODA or LibreDWG
-│   ├── requirements.txt
-│   └── uploads/          # temp file storage (gitignored)
+│   ├── main.py                     # FastAPI routes
+│   ├── schemas.py                  # Pydantic models
+│   ├── storage.py                  # Local JSON metadata + file helpers
+│   ├── pipeline/
+│   │   ├── orchestrator.py         # PDF → vision extraction → schedule
+│   │   ├── vision_extractor.py     # Claude Vision API calls
+│   │   ├── weights.py              # kg/m constants per diameter
+│   │   ├── models.py               # RebarMark, ScheduleRow dataclasses
+│   │   └── excel_export.py         # Schedule → .xlsx export
+│   └── uploads/                    # Runtime file storage (gitignored)
 ├── frontend/
 │   ├── src/
-│   │   ├── routes/
-│   │   │   ├── __root.tsx
-│   │   │   ├── index.tsx              # / — upload
-│   │   │   ├── extract/$fileId.tsx   # layer explorer + mapping builder
-│   │   │   └── preview/$fileId.tsx   # data preview + export
-│   │   ├── components/
-│   │   │   ├── FileUpload.tsx
-│   │   │   ├── LayerExplorer.tsx
-│   │   │   ├── MappingBuilder.tsx
-│   │   │   └── DataPreview.tsx
-│   │   ├── hooks/useExtraction.ts
-│   │   └── types.ts
-│   ├── vite.config.ts
+│   │   ├── routes/                 # TanStack Router file-based routes
+│   │   ├── components/             # ScheduleTable, ConfidenceBadge
+│   │   ├── lib/api.ts              # Axios API client
+│   │   └── types.ts                # Shared TypeScript interfaces
 │   └── package.json
-├── sample-files/
-│   ├── sample.dxf             # synthetic structural drawing (7 layers, 60 entities)
-│   └── generate_sample.py     # script to regenerate
-├── logs/
-│   └── implementation.md      # development log
-├── start-dev.sh               # starts backend + frontend
-└── cad-extract-implementation-plan.pdf
+├── example-docs/                   # Test PDFs (structural drawings)
+├── start-dev.sh                    # Starts backend + frontend
+└── .env.example
 ```
 
----
+## Current status
 
-## API reference
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/upload` | Upload DXF/DWG, returns `file_id` |
-| `GET` | `/api/extractions/{id}` | Full extraction result |
-| `GET` | `/api/extractions/{id}/layers` | Layer summary (types + counts) |
-| `GET` | `/api/extractions/{id}/entities/{layer}` | Entities for a specific layer |
-| `POST` | `/api/extractions/{id}/export` | Export mapped data as `.xlsx` |
-| `GET` | `/health` | Health check |
-
----
-
-## Roadmap
-
-| Phase | Status |
-|---|---|
-| Phase 1 — PoC: CLI + localhost demo | **In progress** |
-| Phase 2 — MVP: auth, DB, cloud storage, Google Sheets | Planned |
-| Phase 3 — Beta: orgs, templates, billing | Planned |
-| Phase 4 — Growth: ML auto-mapping, BIM/IFC | Planned |
-
-See [`cad-extract-implementation-plan.pdf`](cad-extract-implementation-plan.pdf) for the full plan.
+MVP — fully functional locally. No auth, no cloud storage, no database (uses local JSON files). Extraction accuracy is validated against real structural drawings.
