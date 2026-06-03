@@ -82,7 +82,13 @@ async def create_project(body: ProjectCreate):
 
 @app.get("/api/projects", response_model=list[ProjectResponse])
 async def list_projects():
-    return [_project_response(r) for r in storage.list_projects()]
+    results = []
+    for r in storage.list_projects():
+        try:
+            results.append(_project_response(r))
+        except Exception as exc:
+            logger.warning("Skipping malformed project %s: %s", r.get("id", "?"), exc)
+    return results
 
 
 @app.get("/api/projects/{project_id}", response_model=ProjectResponse)

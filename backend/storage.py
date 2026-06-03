@@ -80,7 +80,11 @@ def list_projects() -> list[dict]:
     projects = []
     for meta in UPLOADS_DIR.glob("*/metadata.json"):
         try:
-            projects.append(json.loads(meta.read_text()))
+            record = json.loads(meta.read_text())
+            # Skip records from deprecated pipelines that lack required fields
+            if "name" not in record or "status" not in record:
+                continue
+            projects.append(record)
         except (json.JSONDecodeError, OSError):
             continue
     projects.sort(key=lambda p: p.get("created_at", ""), reverse=True)

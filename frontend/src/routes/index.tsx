@@ -39,9 +39,10 @@ function ProjectsPage() {
     name: "", project_number: "", beneficiary: "", location: "",
   });
 
-  const { data: projects = [], isLoading } = useQuery({
+  const { data: projects = [], isLoading, isError } = useQuery({
     queryKey: ["projects"],
     queryFn: api.listProjects,
+    retry: 1,
   });
 
   const createMutation = useMutation({
@@ -155,6 +156,11 @@ function ProjectsPage() {
       {/* Project list */}
       {isLoading ? (
         <div className="text-center py-16 text-slate-400">Se încarcă…</div>
+      ) : isError ? (
+        <div className="text-center py-16">
+          <p className="text-red-600 font-medium">Nu s-a putut conecta la server.</p>
+          <p className="text-slate-400 text-sm mt-1">Verificați că serverul backend rulează pe portul 8000.</p>
+        </div>
       ) : projects.length === 0 ? (
         <div className="text-center py-20">
           <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-4">

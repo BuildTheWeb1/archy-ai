@@ -2,9 +2,11 @@
 
 ## Project Overview
 
-ArchyAI is a web-based SaaS for Romanian structural engineers and architects. It automates two things they currently do manually:
-1. Takes an uploaded `.dwg` file and converts it to a high resolution pdf, ready to print or send to clients.
-2. will be refined soon enough
+ArchyAI is a web-based SaaS for Romanian structural engineers. It automates a repetitive, time-consuming task they perform on every project: calculating the rebar schedule ("Extras de armătură") from structural PDF drawings.
+
+Engineers upload 1–4 PDF pages (planșe de armare) from a construction project. The system analyses the drawings using Claude Vision API and produces a rebar schedule table with: mark number, diameter, steel type, piece count (Buc.), bar length, total length per diameter, and total weight.
+
+The detailed extraction pipeline design is documented in `docs/extraction-pipeline-plan.md`.
 
 ## Tech Stack
 
@@ -13,15 +15,14 @@ ArchyAI is a web-based SaaS for Romanian structural engineers and architects. It
 - **Framework**: React 19 + TypeScript + Vite
 - **Routing**: TanStack Router (file-based, URL-driven state)
 - **Server state**: TanStack Query (data fetching, polling)
-- **UI components**: [shadcn/ui]
+- **UI components**: shadcn/ui
 - **Styling**: TailwindCSS
-- **Linting**: Biome
 
 ### Backend
 
 - **API framework**: Python 3.12 + FastAPI
-- **DWG/DXF → PDF**: Autodesk Platform Services (APS) Model Derivative API — cloud conversion with full AutoCAD fidelity
-- **PDF splitting**: PyMuPDF — splits combined PDF into per-layout pages
+- **Vision AI**: Claude Vision API (claude-sonnet-4-20250514) via `anthropic` SDK
+- **PDF → image**: PyMuPDF (fitz) — converts PDF pages to 300 DPI PNGs
 - **Task queue**: None — FastAPI BackgroundTasks for async processing
 - **Database**: None — local JSON metadata files
 - **Object storage**: Local filesystem (`backend/uploads/`)
@@ -38,41 +39,43 @@ ArchyAI is a web-based SaaS for Romanian structural engineers and architects. It
 ```
 archyai/
 ├── backend/
-│   ├── main.py              # FastAPI app — routes only, thin handlers
-│   ├── converter.py         # APS API: DWG/DXF → PDF → split per layout
-│   ├── splitter.py          # Bundle layout PDFs into ZIP
-│   ├── storage.py           # Local JSON metadata + file path helpers
-│   ├── schemas.py           # Pydantic request/response models
+│   ├── main.py                        # FastAPI app — routes only, thin handlers
+│   ├── schemas.py                     # Pydantic request/response models
+│   ├── storage.py                     # Local JSON metadata + file path helpers
 │   │
-│   ├── weights.py           # Material weight constants (kg/m by diameter)
+│   ├── pipeline/
+│   │   ├── orchestrator.py            # Runs vision extraction → schedule rows
+│   │   ├── vision_extractor.py        # Claude Vision API: PDF images → structured JSON
+│   │   ├── weights.py                 # Weight constants (kg/m by diameter) + row builder
+│   │   ├── models.py                  # RebarMark and ScheduleRow dataclasses
+│   │   └── excel_export.py            # Schedule → Excel export
 │   │
-│   ├── uploads/             # Runtime storage — gitignored
-│   │   └── {drawing_id}/
+│   ├── uploads/                       # Runtime storage — gitignored
+│   │   └── {project_id}/
 │   │       ├── metadata.json
-│   │       ├── original.dwg/.dxf
-│   │       └── layouts/0.pdf, 1.pdf, …
+│   │       └── pdfs/
 │   └── requirements.txt
 │
 ├── frontend/
 │   ├── src/
 │   │   ├── routes/
-│   │   │   ├── __root.tsx              # Nav shell
-│   │   │   ├── index.tsx               # Upload page
-│   │   │   └── drawings/$drawingId.tsx # Drawing detail (layouts list)
+│   │   │   ├── __root.tsx             # Nav shell
+│   │   │   ├── index.tsx              # Home / project list
+│   │   │   └── projects/$projectId.tsx # Project detail: upload, extract, review
 │   │   ├── components/
-│   │   │   ├── FileUpload.tsx          # Drag-and-drop DWG upload
-│   │   │   ├── DrawingDetail.tsx       # Polling + status + layout list
-│   │   │   └── LayoutList.tsx          # Grid of layout cards with downloads
+│   │   │   ├── ScheduleTable.tsx      # Editable rebar schedule with inline recalc
+│   │   │   └── ConfidenceBadge.tsx    # High/medium/low confidence indicator
 │   │   ├── lib/
-│   │   │   └── api.ts                  # Axios client — all API calls
-│   │   ├── routeTree.gen.ts            # Auto-generated — do not edit
-│   │   └── types.ts                    # Shared TypeScript interfaces
+│   │   │   └── api.ts                 # Axios client — all API calls
+│   │   └── types.ts                   # Shared TypeScript interfaces
 │   ├── vite.config.ts
 │   └── package.json
 │
-├── example-docs/                       # Expected output PDFs (1.pdf–17.pdf)
-├── .env                                # APS credentials (gitignored)
-└── start-dev.sh                        # Starts backend + frontend
+├── docs/
+│   └── extraction-pipeline-plan.md    # Detailed pipeline design + example trace
+├── example-docs/                      # Test PDFs (structural drawings)
+├── .env                               # API keys (gitignored)
+└── start-dev.sh                       # Starts backend + frontend
 ```
 
 ## Development Flow
@@ -88,19 +91,21 @@ cd backend && source venv/bin/activate && uvicorn main:app --reload --port 8000
 cd frontend && pnpm dev
 ```
 
-The `.env` file at the repo root is loaded by `start-dev.sh`. Set `APS_CLIENT_ID` and `APS_CLIENT_SECRET` with your Autodesk Platform Services credentials (create an app at https://aps.autodesk.com/myapps).
+The `.env` file at the repo root must contain `ANTHROPIC_API_KEY`.
 
 ## API Endpoints
 
 ```
-POST  /api/drawings/upload              Upload DWG/DXF → triggers background rendering
-GET   /api/drawings/{id}                Poll status: processing | ready | error
-GET   /api/drawings/{id}/layouts/{n}/pdf  Download single layout PDF
-GET   /api/drawings/{id}/download       Download ZIP of all layouts
+POST  /api/projects                       Create a new project
+GET   /api/projects/{id}                  Get project (poll for status)
+POST  /api/projects/{id}/pdfs             Upload 1–4 PDF planșe de armare
+POST  /api/projects/{id}/extract          Trigger rebar extraction (background)
+PUT   /api/projects/{id}/schedule         Save engineer's edits to schedule
+GET   /api/projects/{id}/schedule.xlsx    Download schedule as Excel
 GET   /health
 ```
 
-## Processing Pipeline (Rebar Extraction)
+## Processing Pipeline
 
 ```
 User uploads 1–4 PDF planșe de armare
@@ -108,8 +113,8 @@ User uploads 1–4 PDF planșe de armare
 POST /api/projects/{id}/pdfs → saves PDFs
 POST /api/projects/{id}/extract → triggers background extraction
       ↓
-Background task (_extract_task):
-  1. Convert each PDF page to 200 DPI PNG images (PyMuPDF)
+Background task:
+  1. Convert each PDF page to 300 DPI PNG images (PyMuPDF)
   2. Send all images to Claude Vision API (claude-sonnet-4-20250514)
      with specialised Romanian structural engineering prompt
   3. Claude returns structured JSON: marks, diameters, counts, lengths
@@ -121,57 +126,51 @@ Frontend polls GET /api/projects/{id} every 2s
   → Engineer reviews, corrects if needed, then exports to Excel
 ```
 
+See `docs/extraction-pipeline-plan.md` for the full multi-step pipeline design, difficulty tiers, and example trace of all 11 marks.
+
+## Key Design Principle
+
+**Separate AI reading from code calculation.** AI extracts raw data from images (mark numbers, annotations, occurrences, dimensions). Code does all arithmetic (counts, total lengths, weights). This separation is critical — asking AI to both read and calculate produces unreliable results.
+
 ## Development Guidelines
 
 ### Do
 
-- **Keep route handlers thin** — delegate all logic to `converter.py`, `splitter.py`, etc.
+- **Keep route handlers thin** — delegate all logic to pipeline modules.
 - **Use Pydantic schemas** for all FastAPI request/response bodies.
 - **Use TypeScript strict mode** — no `any`.
-- **Fail loudly on missing APS credentials** — raise a clear error if `APS_CLIENT_ID` / `APS_CLIENT_SECRET` are not set.
+- **AI reads, code calculates** — never ask the vision model to do arithmetic.
 
 ### Don't
 
 - **Don't put business logic in route handlers** — keep them thin.
 - **Don't use `any` in TypeScript.**
 - **Don't leave `console.log` or `print()` in committed code** — use the logger.
+- **Don't ask AI to calculate** — code handles all math (counts, lengths, weights).
 
 ## Advisor delegation policy
 
-This project has an `advisor` subagent (Opus) configured at `.claude/agents/advisor.md`. It exists to give you a second opinion from a stronger model on consequential decisions, while you (Sonnet) stay the executor and drive the actual work.
+This project has an `advisor` subagent (Opus) configured at `.claude/agents/advisor.md`. It exists to give a second opinion on consequential decisions.
 
 ### When to consult the advisor
 
-Before you start implementing, stop and delegate to the `advisor` subagent whenever you are about to:
+Before implementing, delegate to the `advisor` subagent when about to:
 
-- Choose between two or more architectural options that are hard to reverse (queue vs inline, sync vs async, service boundary placement, schema shape, API contract).
-- Design a parser, extractor, or transformer for messy real-world input (e.g. Romanian rebar annotations, DWG layout parsing) where the strategy — regex vs AST vs LLM fallback vs hybrid — is not obvious.
-- Pick a dependency, library, or external service for a load-bearing concern (auth, storage, background jobs, PDF generation).
-- Introduce a new abstraction, layer, or pattern that other code will depend on.
+- Choose between architectural options that are hard to reverse.
+- Design a parser or extractor for messy real-world input (e.g. Romanian rebar annotations) where the strategy is not obvious.
+- Pick a dependency or external service for a load-bearing concern.
+- Introduce a new abstraction or pattern that other code will depend on.
 - Make a data modeling decision that will be annoying to migrate later.
-- Handle a failure mode or edge case where the "right" behavior is a product/UX judgment call, not just a technical one.
-- Commit to a Phase boundary decision (e.g. "is this still Phase 0 scope or am I sliding into Phase 1?").
+- Handle a failure mode where the "right" behavior is a product/UX judgment call.
 
 ### When NOT to consult the advisor
 
-Do not delegate for:
-
-- Straightforward implementation of an already-decided design.
-- Obvious bug fixes where the cause is clear.
-- Formatting, renaming, mechanical refactors.
-- Questions with a single clearly correct answer.
-- Exploratory reading of the codebase.
-
-The advisor is expensive and its value comes from rarity. If you consult it for everything, you are using it wrong.
+Do not delegate for straightforward implementation, obvious bug fixes, formatting, renaming, or questions with a single clearly correct answer.
 
 ### How to consult it
 
-1. Write a tight brief in your head: the goal, the current state, the 2–3 options you see, the specific question, and any constraints from `archyai-implementation-plan-v3.md` that are relevant.
-2. Invoke the advisor subagent with that brief as the prompt. Do not dump the whole conversation — curate the context so Opus sees only what it needs.
-3. Read the advisor's recommendation. You are not obligated to follow it blindly — if you disagree, say so to me (the user) and explain why, and we decide together.
-4. If the advisor says "stop and clarify X", stop and ask me. Do not proceed on a guess.
-5. Proceed with implementation using your normal tools.
-
-### Reporting
-
-When you come back from an advisor consultation, tell me in one or two sentences: what you asked, what the advisor recommended, and whether you're going to follow it. I want visibility into when Opus is being consulted and why.
+1. Write a tight brief: goal, current state, 2–3 options, specific question, relevant constraints.
+2. Invoke the advisor subagent with that brief. Do not dump the whole conversation.
+3. Read the recommendation. If you disagree, say so to the user and explain why.
+4. If the advisor says "stop and clarify X", stop and ask the user.
+5. Report back: what you asked, what was recommended, whether you're following it.
