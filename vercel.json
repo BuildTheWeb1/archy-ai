@@ -1,12 +1,6 @@
 {
   "buildCommand": "cd frontend && npm install && npx vite build",
   "outputDirectory": "frontend/dist",
-  "functions": {
-    "api/app.py": {
-      "maxDuration": 300,
-      "includeFiles": "backend/**"
-    }
-  },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/app" },
     { "source": "/(.*)", "destination": "/index.html" }
