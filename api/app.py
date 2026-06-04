@@ -1,24 +1,14 @@
 """
-Temporary debug entrypoint — exposes runtime environment info.
+Vercel entrypoint — lives in api/ so Vercel picks it up as a serverless function.
+Adds backend/ to sys.path so internal imports resolve correctly.
 """
 
 import os
 import sys
-from fastapi import FastAPI
 
-app = FastAPI()
+# Vercel cwd = project root; backend/ is a direct subdirectory
+_backend_path = os.path.join(os.getcwd(), "backend")
+if _backend_path not in sys.path:
+    sys.path.insert(0, _backend_path)
 
-@app.get("/api/debug-env")
-def debug_env():
-    backend_by_cwd = os.path.join(os.getcwd(), "backend")
-    backend_by_file = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
-    return {
-        "cwd": os.getcwd(),
-        "file": __file__,
-        "file_abs": os.path.abspath(__file__),
-        "backend_by_cwd": backend_by_cwd,
-        "backend_by_file": backend_by_file,
-        "backend_cwd_exists": os.path.isdir(backend_by_cwd),
-        "backend_file_exists": os.path.isdir(backend_by_file),
-        "sys_path": sys.path[:8],
-    }
+from main import app  # noqa: E402, F401
