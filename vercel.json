@@ -1,4 +1,5 @@
 {
+  "installCommand": "cd frontend && pnpm install",
   "buildCommand": "cd frontend && pnpm run build",
   "outputDirectory": "frontend/dist",
   "functions": {
