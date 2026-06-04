@@ -3,7 +3,8 @@
   "outputDirectory": "frontend/dist",
   "functions": {
     "api/app.py": {
-      "maxDuration": 300
+      "maxDuration": 300,
+      "includeFiles": "backend/**"
     }
   },
   "rewrites": [
