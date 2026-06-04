@@ -1,4 +1,5 @@
 import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
+import { Analytics } from "@vercel/analytics/react";
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -21,6 +22,7 @@ function RootLayout() {
       <main className="flex-1 flex flex-col">
         <Outlet />
       </main>
+      <Analytics />
     </div>
   );
 }
