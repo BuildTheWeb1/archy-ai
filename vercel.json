@@ -1,5 +1,5 @@
 {
-  "buildCommand": "cd frontend && pnpm run build",
+  "buildCommand": "cd frontend && npm install && pnpm run build",
   "outputDirectory": "frontend/dist",
   "functions": {
     "api/app.py": {
